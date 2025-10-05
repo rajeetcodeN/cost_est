@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# File processor files
+/src/components/FileProcessor.old.tsx
+/src/components/FileProcessor.tsx
+/src/components/FileProcessorNew.temp.tsx
+/src/components/FileProcessorNew_*.tsx
+/src/components/fileprocess.tsx

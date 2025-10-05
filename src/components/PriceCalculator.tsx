@@ -10,72 +10,9 @@ import { Trash2, Download, Info, CheckCircle2, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { useSupabaseClient } from '@supabase/auth-helpers-react';
 
-// Cost data from the original HTML
-const COST_DATA = {
-  MATERIAL_COSTS_PER_GRAM: {
-    'C45': 1.5,
-    'C60': 2.5,
-    'Edelstahl': 3.0,
-    'Aluminium': 4.5,
-    'Messing': 6.0
-  },
-  BORE_COSTS: {
-    'M1': 10, 'M2': 11, 'M3': 12, 'M4': 13, 'M5': 14, 'M6': 15, 'M7': 16, 'M8': 17, 'M9': 18, 'M10': 19,
-    'M11': 20, 'M12': 21, 'M13': 22, 'M14': 23, 'M15': 24, 'M16': 25, 'M17': 26, 'M18': 27, 'M19': 28, 'M20': 29, 'M21': 30
-  },
-  COATING_COSTS: {
-    'Typ 1': 3.2, 'Typ 2': 3.4, 'Typ 3': 3.6, 'Typ 4': 3.8, 'Typ 5': 4.0, 'Typ 6': 4.2, 'Typ 7': 4.4, 'Typ 8': 4.6,
-    'Typ 9': 4.8, 'Typ 10': 5.0, 'Typ 11': 5.2, 'Typ 12': 5.4, 'Typ 13': 5.6, 'Typ 14': 5.8, 'Typ 15': 6.0,
-    'Typ 16': 6.2, 'Typ 17': 6.4
-  },
-  TOLERANCE_COSTS: {
-    'h4': 1.5, 'h5': 1.6, 'h6': 1.7, 'h7': 1.8, 'h8': 1.9, 'h9': 2.0, 'h10': 2.1, 'h11': 2.2,
-    'h12': 2.3, 'h13': 2.4, 'h14': 2.5, 'h15': 2.6, 'h16': 2.7, 'h17': 2.8, 'none': 0
-  },
-  HARDENING_COSTS: {
-    'HRC 40': 50, 'HRC 41': 60, 'HRC 42': 70, 'HRC 43': 80, 'HRC 44': 90, 'HRC 45': 100, 'HRC 46': 110,
-    'HRC 47': 120, 'HRC 48': 130, 'HRC 49': 140, 'HRC 50': 150, 'HRC 51': 160, 'HRC 52': 170,
-    'HRC 53': 180, 'HRC 54': 190, 'HRC 55': 200, 'HRC 56': 210, 'HRC 57': 220, 'HRC 58': 230
-  }
-};
-
-const FEATURE_AVAILABILITY = {
-  "Passfeder (Keyway)": {
-    Norms: ["DIN 6885", "Keine Norm"],
-    Materials: ["C45", "Edelstahl", "Aluminium"],
-    Dimensions: Array.from({length: 15}, (_, i) => i + 4), // 4 to 18
-    Bores: ["M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12"],
-    NumberOfBores: Array.from({length: 10}, (_, i) => (i + 1).toString()), // 1 to 10
-    Coatings: ["Typ 1", "Typ 2", "Typ 3", "Typ 4", "Typ 5", "Typ 6", "Typ 7", "Typ 8", "Typ 9", "Typ 10", "Typ 11", "Typ 12"],
-    Hardening: Array.from({length: 19}, (_, i) => `HRC ${i + 40}`), // HRC 40 to HRC 58
-    TolerancesBreite: ["h4", "h5", "h6", "h7", "h8", "h9", "h10", "h11", "h12", "h13", "h14", "h15", "h16", "h17", "none"],
-    TolerancesHohe: ["h4", "h5", "h6", "h7", "h8", "h9", "h10", "h11", "h12", "h13", "h14", "h15", "h16", "h17", "none"]
-  },
-  "Scheibenfeder (Disc Spring)": {
-    Norms: ["DIN 6888", "Keine Norm"],
-    Materials: ["Aluminium"],
-    Dimensions: [4, 5, 6, 7, 16, 17, 18, 19, 20, 21],
-    Bores: ["M1", "M2"],
-    NumberOfBores: Array.from({length: 10}, (_, i) => (i + 1).toString()), // 1 to 10
-    Coatings: ["Typ 1", "Typ 2", "Typ 3", "Typ 4", "Typ 5", "Typ 6", "Typ 7", "Typ 8", "Typ 9", "Typ 10", "Typ 11", "Typ 12"],
-    Hardening: Array.from({length: 19}, (_, i) => `HRC ${i + 40}`), // HRC 40 to HRC 58
-    TolerancesBreite: ["h13", "h14", "h15", "h16", "h17", "none"],
-    TolerancesHohe: ["h13", "h14", "h15", "h16", "h17", "none"]
-  },
-  "Nutenstein (T-Slot Nut)": {
-    Norms: ["Keine Norm"],
-    Materials: ["Aluminium", "Messing"],
-    Dimensions: [3, 4, 5, 6, 7, 16, 17, 18, 22, 23, 24, 25, 26, 27, 28, 29],
-    Bores: ["M13", "M14", "M15", "M16", "M17", "M18", "M19", "M20", "M21"],
-    NumberOfBores: Array.from({length: 10}, (_, i) => (i + 1).toString()), // 1 to 10
-    Coatings: ["Typ 1", "Typ 2", "Typ 3", "Typ 4", "Typ 5", "Typ 6", "Typ 13", "Typ 14", "Typ 15", "Typ 16", "Typ 17"],
-    Hardening: Array.from({length: 19}, (_, i) => `HRC ${i + 40}`), // HRC 40 to HRC 58
-    TolerancesBreite: ["h13", "h14", "h15", "h16", "h17", "none"],
-    TolerancesHohe: ["h13", "h14", "h15", "h16", "h17", "none"]
-  }
-};
-
+// Types for our data
 interface CartItem {
   id: string;
   productGroup: string;
@@ -103,10 +40,18 @@ interface PriceCalculatorProps {
 }
 
 export default function PriceCalculator({ selectedProduct, onSendToChat, onFormFill }: PriceCalculatorProps) {
+  const supabase = useSupabaseClient();
   const [currentStep, setCurrentStep] = useState(1);
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [productGroups, setProductGroups] = useState<{id: number, name: string}[]>([]);
+  const [options, setOptions] = useState<any>(null);
+
+  // Form state
   const [formData, setFormData] = useState({
     productGroup: selectedProduct || '',
+    productGroupId: '',
+    productGroupName: '',
     dinNorm: '',
     material: '',
     breite: '',
@@ -122,12 +67,34 @@ export default function PriceCalculator({ selectedProduct, onSendToChat, onFormF
     quantity: 1
   });
 
+  // Fetch product groups on mount
+  useEffect(() => {
+    const fetchProductGroups = async () => {
+      try {
+        setIsLoading(true);
+        const { data, error } = await supabase.functions.invoke('product-config', {
+          body: { action: 'getProductGroups' }
+        });
+
+        if (error) throw error;
+        setProductGroups(data);
+      } catch (err) {
+        toast.error('Failed to load product groups');
+        console.error(err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchProductGroups();
+  }, [supabase.functions]);
+
   // Update form when product is selected from chat
   useEffect(() => {
     if (selectedProduct && selectedProduct !== formData.productGroup) {
       setFormData(prev => ({ ...prev, productGroup: selectedProduct }));
       setCurrentStep(2);
-      updateDynamicOptions(selectedProduct);
+      fetchOptionsForProduct(selectedProduct);
     }
   }, [selectedProduct]);
 
@@ -135,11 +102,11 @@ export default function PriceCalculator({ selectedProduct, onSendToChat, onFormF
   useEffect(() => {
     const fillFormFromChat = (data: any) => {
       console.log('Received form fill data:', data);
-      
+
       // Create a mapping object for field names to handle different formats
       const fieldMapping: { [key: string]: string } = {
         'productGroup': 'productGroup',
-        'dinNorm': 'dinNorm', 
+        'dinNorm': 'dinNorm',
         'material': 'material',
         'breite': 'breite',
         'hohe': 'hohe',
@@ -153,12 +120,12 @@ export default function PriceCalculator({ selectedProduct, onSendToChat, onFormF
         'toleranceHohe': 'toleranceHohe',
         'quantity': 'quantity'
       };
-      
+
       // Process the data and convert to the correct format
       const updatedData: any = {};
       Object.entries(data).forEach(([key, value]) => {
         const mappedKey = fieldMapping[key] || key;
-        
+
         // Convert numeric strings to numbers for specific fields
         if (['breite', 'hohe', 'tiefe', 'weight', 'numberOfBores', 'quantity'].includes(mappedKey)) {
           updatedData[mappedKey] = Number(value) || value;
@@ -166,99 +133,137 @@ export default function PriceCalculator({ selectedProduct, onSendToChat, onFormF
           updatedData[mappedKey] = value;
         }
       });
-      
+
       console.log('Processed form data:', updatedData);
-      
+
       // Update form data
       setFormData(prev => {
         const newData = { ...prev, ...updatedData };
         console.log('Updated form data:', newData);
         return newData;
       });
-      
+
       // Show success message
       toast.success('Form filled from chat!');
     };
-    
+
     // Expose function to window
     (window as any).fillFormFromChat = fillFormFromChat;
-    
+
     return () => {
       // Cleanup
       delete (window as any).fillFormFromChat;
     };
   }, []);
 
-  const updateDynamicOptions = (productGroup: string) => {
-    const features = FEATURE_AVAILABILITY[productGroup as keyof typeof FEATURE_AVAILABILITY];
-    if (features) {
+  const fetchOptionsForProduct = async (productGroupName: string) => {
+    try {
+      setIsLoading(true);
+      // Find product group ID by name
+      const productGroup = productGroups.find(pg => pg.name === productGroupName);
+      if (!productGroup) return;
+
+      const { data, error } = await supabase.functions.invoke('product-config', {
+        body: {
+          action: 'getOptions',
+          productGroupId: productGroup.id
+        }
+      });
+
+      if (error) throw error;
+      setOptions(data);
+
+      // Set default values
       setFormData(prev => ({
         ...prev,
-        productGroup,
-        dinNorm: features.Norms[0],
-        material: features.Materials[0],
-        breite: features.Dimensions[0].toString(),
-        hohe: features.Dimensions[0].toString(),
-        tiefe: features.Dimensions[0].toString(),
-        bore: features.Bores[0],
-        numberOfBores: parseInt(features.NumberOfBores[0]),
-        coating: features.Coatings[0],
-        hardening: features.Hardening[0],
-        toleranceBreite: features.TolerancesBreite[0],
-        toleranceHohe: features.TolerancesHohe[0]
+        productGroupId: productGroup.id.toString(),
+        productGroupName: productGroup.name,
+        dinNorm: data.standards[0] || '',
+        material: data.materials[0] || '',
+        bore: data.bores[0] || '',
+        coating: data.coatings[0] || '',
+        hardening: data.hardening[0] || '',
+        toleranceBreite: data.tolerances[0] || 'none',
+        toleranceHohe: data.tolerances[0] || 'none',
       }));
+    } catch (err) {
+      toast.error('Failed to load product options');
+      console.error(err);
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const calculateUnitCost = (data: typeof formData) => {
-    let total = 0;
-    
-    // Material cost
-    total += (COST_DATA.MATERIAL_COSTS_PER_GRAM[data.material as keyof typeof COST_DATA.MATERIAL_COSTS_PER_GRAM] || 0) * data.weight;
-    
-    // Bore cost
-    total += (COST_DATA.BORE_COSTS[data.bore as keyof typeof COST_DATA.BORE_COSTS] || 0) * data.numberOfBores;
-    
-    // Coating cost
-    total += COST_DATA.COATING_COSTS[data.coating as keyof typeof COST_DATA.COATING_COSTS] || 0;
-    
-    // Hardening cost
-    total += COST_DATA.HARDENING_COSTS[data.hardening as keyof typeof COST_DATA.HARDENING_COSTS] || 0;
-    
-    // Tolerance costs
-    total += (COST_DATA.TOLERANCE_COSTS[data.toleranceBreite as keyof typeof COST_DATA.TOLERANCE_COSTS] || 0);
-    total += (COST_DATA.TOLERANCE_COSTS[data.toleranceHohe as keyof typeof COST_DATA.TOLERANCE_COSTS] || 0);
-    
-    return total;
+  const calculatePrice = async (productData: any) => {
+    try {
+      const { data, error } = await supabase.functions.invoke('product-config', {
+        body: {
+          action: 'calculatePrice',
+          formData: productData
+        }
+      });
+
+      if (error) throw error;
+      return data.price || 0;
+    } catch (err) {
+      console.error('Price calculation failed:', err);
+      toast.error('Failed to calculate price');
+      return 0;
+    }
   };
 
-  const addToCart = () => {
-    if (!formData.productGroup) {
-      toast.error("Please select a product group first.");
+  const handleAddToCart = async () => {
+    if (!formData.productGroupId || !formData.material) {
+      toast.error('Please fill in all required fields');
       return;
     }
 
-    const unitPrice = calculateUnitCost(formData);
-    const lineTotal = unitPrice * formData.quantity;
+    setIsLoading(true);
+    try {
+      const unitPrice = await calculatePrice(formData);
+      const quantity = parseInt(formData.quantity.toString()) || 1;
 
-    const newItem: CartItem = {
-      id: Date.now().toString(),
-      ...formData,
-      unitPrice,
-      lineTotal
-    };
+      const newItem: CartItem = {
+        id: Date.now().toString(),
+        productGroup: formData.productGroupName,
+        dinNorm: formData.dinNorm,
+        material: formData.material,
+        breite: formData.breite,
+        hohe: formData.hohe,
+        tiefe: formData.tiefe,
+        weight: parseFloat(formData.weight.toString()) || 0,
+        bore: formData.bore,
+        numberOfBores: formData.numberOfBores,
+        coating: formData.coating,
+        hardening: formData.hardening,
+        toleranceBreite: formData.toleranceBreite,
+        toleranceHohe: formData.toleranceHohe,
+        quantity,
+        unitPrice,
+        lineTotal: unitPrice * quantity
+      };
 
-    setCart(prev => [...prev, newItem]);
-    
-    // Reset form
-    setFormData(prev => ({
-      ...prev,
-      productGroup: '',
-      quantity: 1
-    }));
-    setCurrentStep(1);
-    
-    toast.success("Item added to quote!");
+      setCart([...cart, newItem]);
+      toast.success('Item added to cart');
+
+      // Reset form
+      setFormData(prev => ({
+        ...prev,
+        productGroupId: '',
+        productGroupName: '',
+        material: '',
+        breite: '',
+        hohe: '',
+        tiefe: '',
+        quantity: '1'
+      }));
+
+    } catch (err) {
+      console.error('Error adding to cart:', err);
+      toast.error('Failed to add item to cart');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const removeFromCart = (itemId: string) => {
@@ -476,15 +481,15 @@ Please provide guidance for this step.`;
                   <div className="space-y-4">
                     <Select value={formData.productGroup} onValueChange={(value) => {
                       setFormData(prev => ({ ...prev, productGroup: value }));
-                      updateDynamicOptions(value);
+                      fetchOptionsForProduct(value);
                       setCurrentStep(2);
                     }}>
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="-- Select a Product Group --" />
                       </SelectTrigger>
                       <SelectContent>
-                        {Object.keys(FEATURE_AVAILABILITY).map(group => (
-                          <SelectItem key={group} value={group}>{group}</SelectItem>
+                        {productGroups.map(group => (
+                          <SelectItem key={group.id} value={group.name}>{group.name}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -498,7 +503,7 @@ Please provide guidance for this step.`;
                 isActive={currentStep === 2}
                 isComplete={isStepComplete(2)}
               />
-              {currentStep === 2 && features && (
+              {currentStep === 2 && options && (
                 <div className="bg-white border-l-4 border-primary p-6">
                   <div className="space-y-4">
                     <div>
@@ -508,8 +513,8 @@ Please provide guidance for this step.`;
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {features.Norms.map(norm => (
-                            <SelectItem key={norm} value={norm}>{norm}</SelectItem>
+                          {options.standards.map((standard: string) => (
+                            <SelectItem key={standard} value={standard}>{standard}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -521,7 +526,7 @@ Please provide guidance for this step.`;
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {features.Materials.map(material => (
+                          {options.materials.map((material: string) => (
                             <SelectItem key={material} value={material}>{material}</SelectItem>
                           ))}
                         </SelectContent>
@@ -535,8 +540,8 @@ Please provide guidance for this step.`;
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {features.Dimensions.map(dim => (
-                              <SelectItem key={dim} value={dim.toString()}>{dim}</SelectItem>
+                            {options.widths.map((width: number) => (
+                              <SelectItem key={width} value={width.toString()}>{width}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
@@ -548,8 +553,8 @@ Please provide guidance for this step.`;
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {features.Dimensions.map(dim => (
-                              <SelectItem key={dim} value={dim.toString()}>{dim}</SelectItem>
+                            {options.heights.map((height: number) => (
+                              <SelectItem key={height} value={height.toString()}>{height}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
@@ -561,8 +566,8 @@ Please provide guidance for this step.`;
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {features.Dimensions.map(dim => (
-                              <SelectItem key={dim} value={dim.toString()}>{dim}</SelectItem>
+                            {options.depths.map((depth: number) => (
+                              <SelectItem key={depth} value={depth.toString()}>{depth}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
@@ -570,9 +575,9 @@ Please provide guidance for this step.`;
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">Weight (grams)</label>
-                      <Input 
-                        type="number" 
-                        value={formData.weight} 
+                      <Input
+                        type="number"
+                        value={formData.weight}
                         onChange={(e) => setFormData(prev => ({ ...prev, weight: parseInt(e.target.value) || 0 }))}
                         className="w-full"
                       />
@@ -590,7 +595,7 @@ Please provide guidance for this step.`;
                 isActive={currentStep === 3}
                 isComplete={isStepComplete(3)}
               />
-              {currentStep === 3 && features && (
+              {currentStep === 3 && options && (
                 <div className="bg-white border-l-4 border-primary p-6">
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-4">
@@ -601,7 +606,7 @@ Please provide guidance for this step.`;
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {features.Bores.map(bore => (
+                            {options.bores.map((bore: string) => (
                               <SelectItem key={bore} value={bore}>{bore}</SelectItem>
                             ))}
                           </SelectContent>
@@ -614,8 +619,8 @@ Please provide guidance for this step.`;
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {features.NumberOfBores.map(num => (
-                              <SelectItem key={num} value={num}>{num}</SelectItem>
+                            {options.numBores.map((num: number) => (
+                              <SelectItem key={num} value={num.toString()}>{num}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
@@ -629,7 +634,7 @@ Please provide guidance for this step.`;
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {features.Coatings.map(coating => (
+                            {options.coatings.map((coating: string) => (
                               <SelectItem key={coating} value={coating}>{coating}</SelectItem>
                             ))}
                           </SelectContent>
@@ -642,7 +647,7 @@ Please provide guidance for this step.`;
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {features.Hardening.map(hardening => (
+                            {options.hardening.map((hardening: string) => (
                               <SelectItem key={hardening} value={hardening}>{hardening}</SelectItem>
                             ))}
                           </SelectContent>
@@ -657,8 +662,8 @@ Please provide guidance for this step.`;
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {features.TolerancesBreite.map(tolerance => (
-                              <SelectItem key={tolerance} value={tolerance}>{tolerance}</SelectItem>
+                            {options.tolerances.map((tolerance: string) => (
+                              <SelectItem key={`width-${tolerance}`} value={tolerance}>{tolerance}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
@@ -670,8 +675,8 @@ Please provide guidance for this step.`;
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {features.TolerancesHohe.map(tolerance => (
-                              <SelectItem key={tolerance} value={tolerance}>{tolerance}</SelectItem>
+                            {options.tolerances.map((tolerance: string) => (
+                              <SelectItem key={`height-${tolerance}`} value={tolerance}>{tolerance}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
@@ -703,7 +708,7 @@ Please provide guidance for this step.`;
                         className="w-full"
                       />
                     </div>
-                    <Button onClick={addToCart} className="w-full bg-primary hover:bg-primary-dark font-semibold">
+                    <Button onClick={handleAddToCart} className="w-full bg-primary hover:bg-primary-dark font-semibold">
                       Add to Quote
                     </Button>
                   </div>
