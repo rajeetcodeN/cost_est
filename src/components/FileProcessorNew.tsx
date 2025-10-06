@@ -5,6 +5,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import jsPDF from 'jspdf';
+import * as mammoth from 'mammoth';
 import { formatCurrency } from '@/utils/format_currency';
 
 // --- Cost Calculation Constants ---
@@ -129,7 +130,11 @@ interface ExtractedItem {
 }
 
 // --- Main React Component ---
-const FileProcessor: React.FC = () => {
+interface FileProcessorProps {
+  onSendToChat?: (message: string) => void;
+}
+
+const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }) => {
   // --- State Management ---
   const [isDataExtracted, setIsDataExtracted] = useState<boolean>(false);
   const [view, setView] = useState<'card' | 'table'>('card');
@@ -139,16 +144,15 @@ const FileProcessor: React.FC = () => {
   const [lastUploadedFile, setLastUploadedFile] = useState<File | null>(null);
   const [lastPastedText, setLastPastedText] = useState<string>("");
   const [isPreviewOpen, setIsPreviewOpen] = useState<boolean>(false);
+  const [previewContent, setPreviewContent] = useState<string>('');
+  const [isPreviewLoading, setIsPreviewLoading] = useState<boolean>(false);
   
   // Close preview when component unmounts
   useEffect(() => {
     return () => {
-      if (isPreviewOpen) {
-        window.closeDocumentPreview?.();
-        setIsPreviewOpen(false);
-      }
+      window.closeDocumentPreview?.();
     };
-  }, [isPreviewOpen]);
+  }, []);
   const [uploadStatus, setUploadStatus] = useState<string>("");
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [totalCost, setTotalCost] = useState<number>(0);
@@ -230,6 +234,21 @@ const FileProcessor: React.FC = () => {
   }, [items]);
 
   // --- Event Handlers & Logic ---
+  // Function to handle DOC/DOCX preview
+  const handleDocPreview = async (file: File) => {
+    // Convert DOCX to HTML and display as text content
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const result = await mammoth.extractRawText({ arrayBuffer });
+      // Use the same preview system as PDF
+      window.updateDocumentPreview?.('text', result.value);
+      setIsPreviewOpen(true);
+    } catch (error) {
+      console.error('Error processing DOC file:', error);
+      toast.error('Could not preview the document. The file may be corrupted or in an unsupported format.');
+    }
+  };
+
   const handleFileSelect = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
@@ -244,7 +263,7 @@ const FileProcessor: React.FC = () => {
     ];
 
     if (!validTypes.includes(file.type)) {
-      toast.error('Unsupported file type. Please upload an image, PDF, Word, or Excel file.');
+      showError('Unsupported file type. Please upload an image, PDF, Word, or Excel file.');
       return;
     }
 
@@ -259,13 +278,16 @@ const FileProcessor: React.FC = () => {
       setIsPreviewOpen(false);
     }
     
-    // Show preview for image or PDF
+    // Show preview based on file type
     if (file.type.startsWith('image/')) {
       window.updateDocumentPreview?.('image', file);
       setIsPreviewOpen(true);
     } else if (file.type === 'application/pdf') {
       window.updateDocumentPreview?.('pdf', file);
       setIsPreviewOpen(true);
+    } else if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
+               file.type === 'application/msword') {
+      await handleDocPreview(file);
     }
 
     try {
@@ -280,7 +302,24 @@ const FileProcessor: React.FC = () => {
     }
   };
 
+  // Show error message with auto-dismiss
+  const showError = (message: string, duration: number = 15000) => {
+    const toastId = toast.error(message);
+    setTimeout(() => {
+      toast.dismiss(toastId);
+    }, duration);
+  };
+
+  // Handle reset/start over
   const handleReset = () => {
+    setItems([]);
+    setHeaderData(null);
+    setIsDataExtracted(false);
+    setLastUploadedFile(null);
+    setLastPastedText('');
+    setPreviewContent('');
+    window.closeDocumentPreview?.();
+    setUploadStatus('');
   };
   
   const processDocument = async (file: File) => {
@@ -754,7 +793,7 @@ const FileProcessor: React.FC = () => {
       .trim()}`;
   };
 
-  // --- Render ---
+// --- Render ---
   return (
     <div className="w-full min-h-screen flex flex-col">
       <div className="flex-1 p-1 sm:p-2">
@@ -1280,19 +1319,30 @@ const FileProcessor: React.FC = () => {
                     </span>
                   </div>
                 </div>
-                
-                <div className="grid grid-cols-2 gap-3 mt-3">
-                  <button className="w-full bg-indigo-600 text-white text-sm sm:text-base font-semibold py-2 px-3 rounded-lg hover:bg-indigo-700">
-                    Save Record
-                  </button>
-                  <button 
-                    id="save-pdf-btn" 
-                    onClick={generatePdf} 
-                    className="w-full bg-green-600 text-white text-sm sm:text-base font-semibold py-2 px-3 rounded-lg hover:bg-green-700"
-                  >
-                    Save as PDF
-                  </button>
-                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+                    <button 
+                      onClick={() => onSendToChat(JSON.stringify({ items, headerData }, null, 2))}
+                      className="w-full bg-blue-600 text-white text-sm sm:text-base font-semibold py-2 px-3 rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zM9 9h2v2H9V9z" clipRule="evenodd" />
+                      </svg>
+                      Ask AI
+                    </button>
+                    <button className="w-full bg-indigo-600 text-white text-sm sm:text-base font-semibold py-2 px-3 rounded-lg hover:bg-indigo-700">
+                      Save Record
+                    </button>
+                    <button 
+                      id="save-pdf-btn" 
+                      onClick={generatePdf} 
+                      className="w-full bg-green-600 text-white text-sm sm:text-base font-semibold py-2 px-3 rounded-lg hover:bg-green-700 flex items-center justify-center gap-2"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                      </svg>
+                      Save as PDF
+                    </button>
+                  </div>
               </div>
             </div>
           </div>
