@@ -1004,7 +1004,7 @@ Please provide guidance for this step.`;
           
           {activeTab === 'file' && (
             <div className="w-full p-4">
-              <FileProcessor />
+              <FileProcessor onSendToChat={onSendToChat} />
             </div>
           )}
         </div>

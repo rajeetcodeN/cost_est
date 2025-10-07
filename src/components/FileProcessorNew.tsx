@@ -129,6 +129,19 @@ interface ExtractedItem {
   price: number;
 }
 
+// Helper function to get base material name (e.g., 'C45K' -> 'C45')
+const getBaseMaterial = (material: string): string => {
+  if (material.includes('C45')) return 'C45';
+  if (material.includes('C60')) return 'C60';
+  return material;
+};
+
+// Helper function to get material cost with fallback to base material
+const getMaterialCost = (material: string): number | undefined => {
+  return COST_DATA.MATERIAL_COSTS_PER_GRAM[material] || 
+         COST_DATA.MATERIAL_COSTS_PER_GRAM[getBaseMaterial(material)];
+};
+
 // --- Main React Component ---
 interface FileProcessorProps {
   onSendToChat?: (message: string) => void;
@@ -154,21 +167,300 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
     };
   }, []);
   const [uploadStatus, setUploadStatus] = useState<string>("");
+  
+  // Function to calculate weight from dimensions and material density
+  const calculateWeight = (width: number, height: number, depth: number, material: string): number => {
+    try {
+      // Convert dimensions from mm to cm for volume calculation (1cm³ = 1000mm³)
+      const volumeCm3 = (width / 10) * (height / 10) * (depth / 10);
+      const baseMaterial = getBaseMaterial(material);
+      const density = MATERIAL_DENSITY[baseMaterial as keyof typeof MATERIAL_DENSITY] || 7.85; // Default to steel density (7.85 g/cm³)
+      const weight = volumeCm3 * density;
+      return parseFloat(weight.toFixed(3)); // Return weight in grams with 3 decimal places
+    } catch (error) {
+      console.error('Error calculating weight:', error);
+      return 0;
+    }
+  };
+
+  // Helper function to parse tab or space delimited text
+  const parseTextTable = (text: string) => {
+    const lines = text.split('\n').filter(line => line.trim() !== '');
+    if (lines.length === 0) return [];
+    
+    // Try to determine if it's tab or space delimited
+    const isTabDelimited = lines[0].includes('\t');
+    const delimiter = isTabDelimited ? '\t' : /\s{2,}/; // Tab or multiple spaces
+    
+    // Try to find header row
+    const headerRow = lines[0];
+    const headers = isTabDelimited 
+      ? headerRow.split('\t').map(h => h.trim().toLowerCase())
+      : headerRow.split(/\s{2,}/).map(h => h.trim().toLowerCase());
+    
+    // If we have a proper header row, process as table
+    if (headers.length > 3 && headers.some(h => ['artikel', 'menge', 'gewicht'].some(k => h.includes(k)))) {
+      return lines.slice(1).map(line => {
+        const values = isTabDelimited 
+          ? line.split('\t').map(v => v.trim())
+          : line.split(/\s{2,}/).map(v => v.trim());
+        
+        const item: any = {};
+        headers.forEach((header, index) => {
+          if (values[index]) item[header] = values[index];
+        });
+        return item;
+      });
+    }
+    
+    // If no proper header row, try to parse as single line
+    if (lines.length === 1) {
+      const parts = text.trim().split(/\s+/);
+      if (parts.length >= 5) {
+        // Try to find position of quantity and unit
+        const qtyIndex = parts.findIndex((p, i) => !isNaN(parseFloat(p)) && i > 0);
+        if (qtyIndex > 0) {
+          const item: any = {};
+          item.article_name = parts.slice(1, qtyIndex).join(' ');
+          item.qty = parseFloat(parts[qtyIndex]);
+          item.unit = parts[qtyIndex + 1] || 'St';
+          
+          // Try to find weight
+          const weightIndex = parts.findIndex((p, i) => i > qtyIndex + 1 && !isNaN(parseFloat(p.replace(',', '.'))));
+          if (weightIndex > 0) {
+            item.weight = parseFloat(parts[weightIndex].replace(',', '.'));
+          }
+          
+          // Try to extract dimensions from article name
+          const dimMatch = item.article_name.match(/(\d+)[xX×](\d+)[xX×](\d+)/);
+          if (dimMatch) {
+            item.dimensions = `${dimMatch[1]}x${dimMatch[2]}x${dimMatch[3]}`;
+          }
+          
+          return [item];
+        }
+      }
+    }
+    
+    return [];
+  };
+
+  // Function to process pasted text and extract items with weights
+  const processPastedText = (text: string) => {
+    try {
+      if (!text || typeof text !== 'string') {
+        throw new Error('No text provided or invalid format');
+      }
+
+      // First try to parse as JSON
+      try {
+        const jsonItems = JSON.parse(text);
+        return processJsonItems(Array.isArray(jsonItems) ? jsonItems : [jsonItems]);
+      } catch (e) {
+        // If not JSON, try to parse as text table
+        const tableItems = parseTextTable(text);
+        if (tableItems.length > 0) {
+          return processTextItems(tableItems);
+        }
+        
+        // If still no items, try to parse as single line
+        const parts = text.trim().split(/\s+/);
+        if (parts.length >= 5) {
+          const item: any = {};
+          // Try to find position of quantity (first numeric value after position)
+          const qtyIndex = parts.findIndex((p, i) => i > 0 && !isNaN(parseFloat(p)));
+          if (qtyIndex > 0) {
+            item.article_name = parts.slice(1, qtyIndex).join(' ');
+            item.qty = parseFloat(parts[qtyIndex]);
+            item.unit = parts[qtyIndex + 1] || 'St';
+            
+            // Try to find weight (next numeric value after unit)
+            const weightIndex = parts.findIndex((p, i) => i > qtyIndex + 1 && !isNaN(parseFloat(p.replace(',', '.'))));
+            if (weightIndex > 0) {
+              item.weight = parseFloat(parts[weightIndex].replace(',', '.'));
+            }
+            
+            // Extract dimensions from article name (e.g., 6x4x10)
+            const dimMatch = item.article_name.match(/(\d+)[xX×](\d+)[xX×](\d+)/);
+            if (dimMatch) {
+              item.dimensions = `${dimMatch[1]}x${dimMatch[2]}x${dimMatch[3]}`;
+              
+              // Extract material (e.g., C45K)
+              const materialMatch = item.article_name.match(/\b([A-Z]\d+[A-Z]?)\b/);
+              if (materialMatch) {
+                item.material = materialMatch[1];
+              }
+            }
+            
+            return processTextItems([item]);
+          }
+        }
+        
+        throw new Error('Could not parse the input format');
+      }
+      try {
+        // Try parsing as a JSON array first
+        items = JSON.parse(text);
+      } catch (e) {
+        console.log('Not a direct JSON array, trying to clean and parse...');
+        // If that fails, try to clean and parse as JSON array
+        try {
+          // Try to fix common JSON issues
+          const cleanText = text
+            .replace(/[\r\n]+/g, '') // Remove all line breaks
+            .replace(/,(\s*[}\]])/g, '$1') // Remove trailing commas
+            .replace(/([}"\d])\s+/g, '$1,') // Add missing commas between elements
+            .replace(/,\s*$/, '') // Remove trailing comma
+            .replace(/([{\[,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":'); // Add quotes around keys
+
+          // Try parsing as JSON array
+          items = JSON.parse(`[${cleanText}]`);
+        } catch (e2) {
+          console.error('Error parsing as JSON array:', e2);
+          // If that fails, try to parse as newline-separated JSON objects
+          try {
+            const lines = text.split('\n').filter(Boolean);
+            items = lines.map(line => {
+              try {
+                return JSON.parse(line);
+              } catch (e3) {
+                console.error('Error parsing line as JSON:', line, e3);
+                return null;
+              }
+            }).filter(Boolean);
+            
+            if (items.length === 0) {
+              throw new Error('Could not parse any valid items from the input');
+            }
+          } catch (e3) {
+            console.error('Failed to parse input:', e3);
+            throw new Error('Could not parse the input. Please ensure it is valid JSON or newline-separated JSON objects.');
+          }
+        }
+      }
+
+      // Process each item to calculate weight
+      const processedItems = items.map((item: any) => {
+        try {
+          if (!item) return null;
+          
+          // Extract dimensions (format: 6x4x10 or {width}x{height}x{depth})
+          let width = 0, height = 0, depth = 0;
+          if (item.dimensions) {
+            const dims = String(item.dimensions).split(/[x×]/).map(Number);
+            if (dims.length >= 3) [width, height, depth] = dims;
+          } else if (item.width && item.height && item.depth) {
+            width = Number(item.width) || 0;
+            height = Number(item.height) || 0;
+            depth = Number(item.depth) || 0;
+          }
+
+          // Extract material from article name (e.g., "DIN 6885 C45K B" -> "C45")
+          let material = 'C45'; // Default material
+          if (item.material) {
+            material = getBaseMaterial(String(item.material));
+          } else if (item.article_name) {
+            const materialMatch = String(item.article_name).match(/\b([A-Z]\d+[A-Z]?)\b/);
+            if (materialMatch) material = getBaseMaterial(materialMatch[1]);
+          }
+
+          // Calculate weight
+          const weight = calculateWeight(width, height, depth, material);
+          
+          // Calculate unit price with proper defaults
+          const unitPrice = calculateUnitPrice({
+            ...item,
+            material,
+            width,
+            height,
+            depth,
+            weight,
+            bore: item.bore || 'none',
+            numberOfBores: Number(item.numberOfBores) || 0,
+            coating: item.coating || 'none',
+            hardening: item.hardening || 'none',
+            toleranceBreite: item.toleranceBreite || 'none',
+            toleranceHohe: item.toleranceHohe || 'none',
+            qty: Number(item.qty) || Number(item.quantity) || 1,
+            unit: item.unit || 'pcs',
+            price: 0,
+            unitPrice: 0,
+            lineTotal: 0,
+            dimensions: { width, height, depth },
+            deliveryDate: item.deliveryDate || item.delivery_date || '',
+            productGroup: item.productGroup || item.product_group || '',
+            supplier_material_number: item.supplier_material_number || item.supplierMaterialNumber || '',
+            customer_material_number: item.customer_material_number || item.customerMaterialNumber || ''
+          });
+
+          return {
+            ...item,
+            id: item.id || item.pos || Math.floor(Math.random() * 10000),
+            material,
+            width,
+            height,
+            depth,
+            weight,
+            dimensions: { width, height, depth },
+            // Set default values for other required fields
+            bore: item.bore || 'none',
+            numberOfBores: Number(item.numberOfBores) || 0,
+            coating: item.coating || 'none',
+            hardening: item.hardening || 'none',
+            toleranceBreite: item.toleranceBreite || 'none',
+            toleranceHohe: item.toleranceHohe || 'none',
+            unit: item.unit || 'pcs',
+            unitPrice: unitPrice,
+            price: unitPrice,
+            lineTotal: unitPrice * (Number(item.qty) || Number(item.quantity) || 1),
+            qty: Number(item.qty) || Number(item.quantity) || 1,
+            deliveryDate: item.deliveryDate || item.delivery_date || ''
+          };
+        } catch (error) {
+          console.error('Error processing item:', item, error);
+          return null;
+        }
+      });
+
+      // Filter out any null items and update state
+      const validItems = processedItems.filter(Boolean);
+      if (validItems.length === 0) {
+        throw new Error('No valid items could be processed from the input');
+      }
+      
+      setItems(validItems);
+      setUploadStatus(`Successfully processed ${validItems.length} item${validItems.length !== 1 ? 's' : ''}`);
+      setIsDataExtracted(true);
+      
+    } catch (error) {
+      console.error('Error processing pasted text:', error);
+      setUploadStatus('Error processing text. Please check the format.');
+      toast.error('Error processing pasted text. Please check the format.');
+    }
+  };
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [totalCost, setTotalCost] = useState<number>(0);
 
-  // Calculate weight based on dimensions and material density
-  const calculateWeight = (width: number, height: number, depth: number, material: string): number => {
-    // Convert dimensions from mm to cm for volume calculation
-    const volumeCm3 = (width / 10) * (height / 10) * (depth / 10); // cm³
-    const density = MATERIAL_DENSITY[material as keyof typeof MATERIAL_DENSITY] || 0;
-    return parseFloat((volumeCm3 * density).toFixed(2)); // weight in grams
+  // Handle text area paste event
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const pastedText = e.clipboardData.getData('text/plain');
+    setLastPastedText(pastedText);
+    processPastedText(pastedText);
+  };
+
+  // Handle process button click
+  const handleProcessText = () => {
+    if (lastPastedText) {
+      processPastedText(lastPastedText);
+    }
   };
 
   // Calculate unit price based on item properties
   const calculateUnitPrice = (item: ExtractedItem): number => {
+    // Get base material for cost lookup
+    const baseMaterial = getBaseMaterial(item.material);
     // Get material cost per gram
-    const materialCostPerGram = COST_DATA.MATERIAL_COSTS_PER_GRAM[item.material as keyof typeof COST_DATA.MATERIAL_COSTS_PER_GRAM] || 0;
+    const materialCostPerGram = COST_DATA.MATERIAL_COSTS_PER_GRAM[baseMaterial as keyof typeof COST_DATA.MATERIAL_COSTS_PER_GRAM] || 0;
     
     // Calculate base cost (material cost only)
     const baseCost = item.weight * materialCostPerGram;
@@ -588,49 +880,319 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
         creator: 'Nosta Quote AI'
       });
 
-      // Add title
-      doc.setFontSize(20);
-      doc.text('NOSTA GMBH', 105, 20, { align: 'center' });
-      doc.setFontSize(16);
-      doc.text('QUOTATION', 105, 30, { align: 'center' });
-
-      // Add header information
-      doc.setFontSize(12);
-      if (headerData) {
-        doc.text(`Customer: ${headerData.customer_name}`, 20, 50);
-        doc.text(`Document: ${headerData.type_of_document} ${headerData.order_or_rfq_number || ''}`, 20, 60);
-        doc.text(`Date: ${headerData.date || new Date().toLocaleDateString()}`, 20, 70);
-      } else {
-        doc.text(`Date: ${new Date().toLocaleDateString()}`, 20, 50);
+      // Add NOSTA logo and company information
+      try {
+        // Add company name and address on the right side
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(14);
+        doc.text('Nosta GmbH', 100, 20);
+        
+        // Add address
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        doc.text('An der Bahn 5', 100, 28);
+        doc.text('89420 Höchstädt an der Donau', 100, 36);
+        
+        // Add logo from public directory
+        try {
+          // Using absolute path to ensure the logo is found
+          const logoUrl = '/nosta_logo.png';
+          
+          // Get the image dimensions to maintain aspect ratio
+          const img = new Image();
+          img.src = window.location.origin + logoUrl;
+          
+          // Wait for image to load
+          await new Promise((resolve) => {
+            if (img.complete) {
+              resolve(true);
+            } else {
+              img.onload = () => resolve(true);
+              img.onerror = () => resolve(false);
+            }
+          });
+          
+          // Calculate dimensions to fit nicely on the page
+          const maxWidth = 70;
+          const maxHeight = 40;
+          let width = img.width;
+          let height = img.height;
+          
+          // Maintain aspect ratio
+          if (width > maxWidth) {
+            const ratio = maxWidth / width;
+            width = maxWidth;
+            height = height * ratio;
+          }
+          if (height > maxHeight) {
+            const ratio = maxHeight / height;
+            height = maxHeight;
+            width = width * ratio;
+          }
+          
+          // Add the image to the PDF
+          doc.addImage(img, 'PNG', 20, 15, width, height);
+          
+        } catch (e) {
+          console.error('Error loading logo:', e);
+          // Fallback to text if logo can't be loaded
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(24);
+          doc.text('NOSTA', 20, 30);
+        }
+      } catch (e) {
+        console.warn('Error in header:', e);
+        // Minimal fallback
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(24);
+        doc.text('NOSTA GMBH', 20, 30);
       }
       
+      // Add document title
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.text('COST CALCULATION', 105, 60, { align: 'center' });
+      
+      // Add horizontal line
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.5);
+      const lineY = 65; // Position the line below the header
+      doc.line(20, lineY, 190, lineY);
+      
+      // Adjust the starting Y position for the document details
+      const docDetailsStartY = lineY + 15;
+
+      // Add document details in two columns - use adjusted Y positions
+      const docDate = headerData?.date || new Date().toISOString().split('T')[0];
+      const docNumber = headerData?.order_or_rfq_number || 'N/A';
+      const customerName = headerData?.customer_name || 'N/A';
+      const customerNumber = headerData?.customer_number || 'N/A';
+      const docType = headerData?.type_of_document || 'QUOTE';
+      
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'bold');
+      const row1Y = docDetailsStartY + 5;
+      const row2Y = row1Y + 10;
+      const row3Y = row2Y + 10;
+      
+      doc.text('Customer Name:', 20, row1Y);
+      doc.text('Document Type:', 20, row2Y);
+      doc.text('Document Date:', 20, row3Y);
+      doc.text('Customer Number:', 105, row1Y);
+      doc.text('RFQ/Order Number:', 105, row2Y);
+      
+      // Add document detail values
+      doc.setFont('helvetica', 'normal');
+      doc.text(customerName, 50, row1Y);
+      doc.text(docType, 50, row2Y);
+      doc.text(docDate, 50, row3Y);
+      doc.text(customerNumber, 135, row1Y);
+      doc.text(docNumber, 140, row2Y);
+      
+      // Add another horizontal line - position it below the document details
+      const bottomLineY = row3Y + 5;
+      doc.line(20, bottomLineY, 190, bottomLineY);
+      
+      // Format additional specifications for better display
+      const formatAdditionalSpecs = (item: ExtractedItem) => {
+        const specs = [];
+        if (item.bore && item.bore !== 'none') specs.push(`Bore: ${item.bore}`);
+        if (item.coating && item.coating !== 'none') specs.push(`Coating: ${item.coating}`);
+        if (item.hardening && item.hardening !== 'none') specs.push(`Hardening: ${item.hardening}`);
+        if (item.toleranceBreite && item.toleranceBreite !== 'none') specs.push(`Tol. W: ${item.toleranceBreite}`);
+        if (item.toleranceHohe && item.toleranceHohe !== 'none') specs.push(`Tol. H: ${item.toleranceHohe}`);
+        
+        return specs.length > 0 ? specs : ['-'];
+      };
+      
       // Add table with extracted items
+      // Adjust layout for better readability with more spacing
+      const startY = bottomLineY + 10; // Start table lower to give more space after the last line
       autoTable(doc, {
-        startY: headerData ? 80 : 60,
-        head: [['#', 'Article', 'Qty', 'Unit', 'Price', 'Total']],
-        body: items.map(item => [
-          item.pos.toString(),
-          item.article_name,
-          item.qty.toString(),
-          item.unit,
-          `${item.price.toFixed(2)} EUR`,
-          `${(item.qty * item.price).toFixed(2)} EUR`
-        ]),
+        startY: startY,
+        tableLineWidth: 0.1,
+        tableLineColor: [200, 200, 200],
+        head: [
+          [
+            { content: '#', styles: { cellWidth: 'auto', minCellWidth: 8 } },
+            { 
+              content: 'Supplier\nMaterial', 
+              styles: { 
+                cellWidth: 'auto', 
+                minCellWidth: 30,
+                fontSize: 6,
+                lineHeight: 1.2
+              } 
+            },
+            { 
+              content: 'Customer\nMaterial', 
+              styles: { 
+                cellWidth: 'auto',
+                minCellWidth: 30,
+                fontSize: 6,
+                lineHeight: 1.2
+              } 
+            },
+            { 
+              content: 'Article Name / Description', 
+              styles: { 
+                cellWidth: 'auto',
+                minCellWidth: 40,
+                fontSize: 6,
+                lineWidth: 0.1
+              } 
+            },
+            { 
+              content: 'Qty', 
+              styles: { 
+                cellWidth: 'auto',
+                minCellWidth: 10,
+                halign: 'center'
+              } 
+            },
+            { 
+              content: 'Dimensions\n(W×H×D mm)', 
+              styles: { 
+                cellWidth: 'auto',
+                minCellWidth: 25,
+                fontSize: 5.5,
+                lineHeight: 1.2
+              } 
+            },
+            { 
+              content: 'Weight\n(kg)', 
+              styles: { 
+                cellWidth: 'auto',
+                minCellWidth: 15,
+                fontSize: 6,
+                lineHeight: 1.2,
+                halign: 'right'
+              } 
+            },
+            { 
+              content: 'Unit Price\n(€)', 
+              styles: { 
+                cellWidth: 'auto',
+                minCellWidth: 20,
+                fontSize: 6,
+                lineHeight: 1.2,
+                halign: 'right'
+              } 
+            },
+            { 
+              content: 'Subtotal\n(€)', 
+              styles: { 
+                cellWidth: 'auto',
+                minCellWidth: 20,
+                fontSize: 6,
+                lineHeight: 1.2,
+                halign: 'right'
+              } 
+            }
+          ]
+        ],
+        body: items.flatMap((item, index) => {
+          const specs = formatAdditionalSpecs(item);
+          const subtotal = item.qty * (item.unitPrice || 0);
+          
+          // Main row with most details
+          const mainRow = [
+            { content: item.pos.toString(), rowSpan: specs.length + 1 },
+            { content: item.supplier_material_number || '-', rowSpan: specs.length + 1 },
+            { content: item.customer_material_number || '-', rowSpan: specs.length + 1 },
+            { content: item.article_name || '-', rowSpan: specs.length + 1 },
+            { content: item.qty.toString(), rowSpan: specs.length + 1 },
+            { content: item.dimensions ? `${item.dimensions.width}×${item.dimensions.height}×${item.dimensions.depth}` : '-', rowSpan: specs.length + 1 },
+            { content: item.weight ? item.weight.toFixed(3) : '-', rowSpan: specs.length + 1 },
+            { content: item.unitPrice ? item.unitPrice.toFixed(2) : '0.00', rowSpan: specs.length + 1 },
+            { content: subtotal.toFixed(2), rowSpan: specs.length + 1, styles: { fontStyle: 'bold' } }
+          ];
+          
+          // Additional rows for specifications
+          const specRows = specs.map((spec, i) => [
+            i === 0 ? { content: 'Specs:', colSpan: 2, styles: { fontStyle: 'italic' } } : '',
+            i === 0 ? '' : '',
+            { content: spec, colSpan: specs.length > 1 ? 2 : 5 },
+            ...(specs.length > 1 ? ['', ''] : ['', '', ''])
+          ].filter(Boolean));
+          
+          return [mainRow, ...specRows];
+        }),
         headStyles: {
-          fillColor: [59, 130, 246], // blue-500
+          fillColor: [0, 51, 102], // Dark blue
           textColor: 255,
-          fontStyle: 'bold'
+          fontStyle: 'bold',
+          fontSize: 7,
+          cellPadding: 2,
+          lineWidth: 0.1,
+          textColor: [255, 255, 255],
+          halign: 'center'
         },
-        margin: { top: 20 }
+        bodyStyles: {
+          fontSize: 7,
+          cellPadding: 2,
+          lineWidth: 0.1,
+          lineColor: [200, 200, 200]
+        },
+        alternateRowStyles: {
+          fillColor: [250, 250, 250]
+        },
+        margin: { top: 5 },
+        styles: {
+          overflow: 'linebreak',
+          cellPadding: { top: 3, right: 2, bottom: 3, left: 2 }, // More vertical padding
+          fontSize: 7,
+          cellWidth: 'wrap',
+          minCellHeight: 10, // Increased minimum height
+          lineHeight: 1.4, // Better line spacing
+          valign: 'middle' // Center content vertically
+        },
+        columnStyles: {
+          0: { cellWidth: 10, halign: 'center' },  // #
+          1: { cellWidth: 25 },  // Supplier Material
+          2: { cellWidth: 25 },  // Customer Material
+          3: { cellWidth: 35 },  // Article Name
+          4: { cellWidth: 10, halign: 'center' },  // Qty
+          5: { cellWidth: 25, fontSize: 6, halign: 'center' },  // Dimensions
+          6: { cellWidth: 20, halign: 'right' },  // Weight
+          7: { cellWidth: 20, halign: 'right' },  // Unit Price
+          8: { cellWidth: 20, halign: 'right' }   // Subtotal
+        },
+        didDrawPage: function(data) {
+          // Add page number with more spacing
+          const pageSize = doc.internal.pageSize;
+          const pageHeight = pageSize.height ? pageSize.height : pageSize.getHeight();
+          
+          // Add more space before footer
+          doc.setFontSize(8);
+          doc.text(`Page ${data.pageNumber}`, 105, pageHeight - 15, { align: 'center' });
+          
+          // Add footer with company info and more spacing
+          doc.setFontSize(7);
+          doc.setTextColor(100);
+          doc.text('NOSTA GmbH • Your Address • Phone: +49 XXX XXXX • Email: info@nosta-gmbh.de', 105, pageHeight - 8, { align: 'center' });
+        }
       });
       
-      // Add total cost
+      // Add total cost with a nice box
       const finalY = (doc as any).lastAutoTable.finalY + 10;
-      doc.setFontSize(14);
-      doc.setFont(undefined, 'bold');
-      doc.text(`Total Cost: ${totalCost.toFixed(2)} EUR`, 14, finalY);
+      doc.setFillColor(240, 240, 240);
+      doc.rect(120, finalY, 80, 15, 'F');
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'bold');
+      doc.text('TOTAL COST (EUR):', 120, finalY + 9, { align: 'right' });
+      doc.setFontSize(12);
+      doc.text(totalCost.toFixed(2), 190, finalY + 9, { align: 'right' });
       
-      doc.save(`nosta-quote-${new Date().toISOString().split('T')[0]}.pdf`);
+      // Draw a line above the total
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.5);
+      doc.line(120, finalY, 200, finalY);
+      
+      // Remove terms and conditions as requested
+      
+      // Save the PDF with a meaningful name
+      doc.save(`NOSTA-${docType}-${docNumber || docDate.replace(/\//g, '-')}.pdf`);
       toast.success('PDF generated successfully!');
       
     } catch (error) {
@@ -836,6 +1398,7 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
               className="w-full p-3 bg-gray-50 border-gray-300 rounded-md" 
               placeholder="Paste RFQ text here..." 
               value={lastPastedText} 
+              onPaste={handlePaste}
               onChange={(e) => {
                 const text = e.target.value;
                 setLastPastedText(text); 
@@ -1238,9 +1801,102 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
                               </div>
                             </div>
                           </div>
-                          <div className="flex justify-between items-center mt-4 pt-4 border-t">
-                            <span className="text-base font-semibold">Subtotal:</span>
-                            <span className="font-bold text-blue-600 text-lg">{formatCurrency(item.qty * item.price)}</span>
+                          <div className="mt-4 pt-4 border-t">
+                            <div className="space-y-2 text-sm text-gray-700">
+                              {/* Material Cost */}
+                              <div className="flex justify-between">
+                                <span>Material Cost:</span>
+                                <span>{formatCurrency(getMaterialCost(item.material) || 0)}/g</span>
+                              </div>
+                              
+                              {/* Weight and Dimensions */}
+                              <div className="flex justify-between">
+                                <span>Weight:</span>
+                                <span>{item.weight || 0}g</span>
+                              </div>
+                              {item.width && item.height && item.depth && (
+                                <div className="text-xs text-gray-500 text-right">
+                                  ({item.width} × {item.height} × {item.depth}mm) × {MATERIAL_DENSITY[getBaseMaterial(item.material) as keyof typeof MATERIAL_DENSITY] || 'N/A'} g/cm³
+                                </div>
+                              )}
+                              
+                              {/* Price Calculation */}
+                              <div className="mt-2 pt-2 border-t">
+                                <div className="text-sm">
+                                  <div className="flex justify-between">
+                                    <span>Material Cost:</span>
+                                    <span>{formatCurrency(getMaterialCost(item.material) || 0)}/g × {item.weight || 0}g = {formatCurrency((getMaterialCost(item.material) || 0) * (item.weight || 0))}</span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Additional Features */}
+                              <div className="space-y-1 mt-1">
+                                {[
+                                  item.bore && item.bore !== 'none' && {
+                                    text: `Bore: ${item.bore} (${item.numberOfBores})`,
+                                    cost: (COST_DATA.BORE_COSTS[item.bore] || 0) * (item.numberOfBores || 1)
+                                  },
+                                  item.coating && item.coating !== 'none' && {
+                                    text: `Coating: ${item.coating}`,
+                                    cost: COST_DATA.COATING_COSTS[item.coating] || 0
+                                  },
+                                  item.hardening && item.hardening !== 'none' && {
+                                    text: `Hardening: ${item.hardening}`,
+                                    cost: COST_DATA.HARDENING_COSTS[item.hardening] || 0
+                                  },
+                                  item.toleranceBreite && item.toleranceBreite !== 'none' && {
+                                    text: `Tolerance (Width): ${item.toleranceBreite}`,
+                                    cost: COST_DATA.TOLERANCE_COSTS[item.toleranceBreite] || 0
+                                  },
+                                  item.toleranceHohe && item.toleranceHohe !== 'none' && {
+                                    text: `Tolerance (Height): ${item.toleranceHohe}`,
+                                    cost: COST_DATA.TOLERANCE_COSTS[item.toleranceHohe] || 0
+                                  }
+                                ].filter(Boolean)
+                                .map((feature, i) => (
+                                  <div key={i} className="flex justify-between">
+                                    <span>+ {feature.text}</span>
+                                    <span>{formatCurrency(feature.cost)}</span>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {/* Total Price and Tolerances */}
+                              <div className="mt-2 pt-2 border-t">
+                                <div className="flex justify-between font-medium">
+                                  <span>Unit Price (Total):</span>
+                                  <span>{formatCurrency(item.price)}</span>
+                                </div>
+                                
+                                {(item.toleranceBreite && item.toleranceBreite !== 'none') && (
+                                  <div className="flex justify-between text-sm text-gray-600 mt-1">
+                                    <span>+ Tolerance (Width {item.toleranceBreite}):</span>
+                                    <span>{formatCurrency(COST_DATA.TOLERANCE_COSTS[item.toleranceBreite])}</span>
+                                  </div>
+                                )}
+                                
+                                {(item.toleranceHohe && item.toleranceHohe !== 'none') && (
+                                  <div className="flex justify-between text-sm text-gray-600 mt-1">
+                                    <span>+ Tolerance (Height {item.toleranceHohe}):</span>
+                                    <span>{formatCurrency(COST_DATA.TOLERANCE_COSTS[item.toleranceHohe])}</span>
+                                  </div>
+                                )}
+                              </div>
+                              
+                              <div className="border-t border-gray-200 my-2"></div>
+                              
+                              <div className="flex justify-between font-medium">
+                                <span>Quantity:</span>
+                                <span>{item.qty} {item.unit}</span>
+                              </div>
+                              
+                              <div className="flex justify-between font-semibold text-base pt-2 border-t border-gray-200">
+                                <span>Subtotal ({item.qty} × {formatCurrency(item.price)}):</span>
+                                <span className="text-blue-600">{formatCurrency(item.qty * item.price)}</span>
+                              </div>
+                              
+                            </div>
                           </div>
                         </div>
                       ))}
@@ -1252,6 +1908,8 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
                           <tr>
                             <th className="px-3 py-2 text-left font-medium text-gray-500">Pos</th>
                             <th className="px-3 py-2 text-left font-medium text-gray-500">Article Name</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Material</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Dimensions (mm)</th>
                             <th className="px-3 py-2 text-left font-medium text-gray-500">Qty</th>
                             <th className="px-3 py-2 text-left font-medium text-gray-500">Unit</th>
                             <th className="px-3 py-2 text-left font-medium text-gray-500">Unit Price</th>
@@ -1262,13 +1920,51 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
                           {items.map((item, index) => (
                             <tr key={item.id}>
                               <td className="px-3 py-2">{item.pos}</td>
-                              <td className="px-3 py-2">
+                              <td className="px-3 py-2 min-w-[200px]">
                                 <input 
                                   type="text" 
                                   value={item.article_name} 
                                   onChange={e => updateItemData(index, 'article_name', e.target.value)} 
                                   className="w-full p-1 border rounded"
                                 />
+                              </td>
+                              <td className="px-3 py-2">
+                                <select
+                                  value={item.material}
+                                  onChange={e => updateItemData(index, 'material', e.target.value)}
+                                  className="w-full p-1 border rounded text-sm"
+                                >
+                                  {Object.keys(COST_DATA.MATERIAL_COSTS_PER_GRAM).map(mat => (
+                                    <option key={mat} value={mat}>{mat}</option>
+                                  ))}
+                                </select>
+                              </td>
+                              <td className="px-3 py-2 whitespace-nowrap">
+                                <div className="flex gap-1">
+                                  <input 
+                                    type="number" 
+                                    value={item.width || ''} 
+                                    onChange={e => updateItemData(index, 'width', e.target.value)} 
+                                    placeholder="W"
+                                    className="w-14 p-1 border rounded text-center"
+                                  />
+                                  <span className="self-center">×</span>
+                                  <input 
+                                    type="number" 
+                                    value={item.height || ''} 
+                                    onChange={e => updateItemData(index, 'height', e.target.value)} 
+                                    placeholder="H"
+                                    className="w-14 p-1 border rounded text-center"
+                                  />
+                                  <span className="self-center">×</span>
+                                  <input 
+                                    type="number" 
+                                    value={item.depth || ''} 
+                                    onChange={e => updateItemData(index, 'depth', e.target.value)} 
+                                    placeholder="D"
+                                    className="w-14 p-1 border rounded text-center"
+                                  />
+                                </div>
                               </td>
                               <td className="px-3 py-2">
                                 <input 
@@ -1279,12 +1975,17 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
                                 />
                               </td>
                               <td className="px-3 py-2">
-                                <input 
-                                  type="text" 
+                                <select 
                                   value={item.unit} 
                                   onChange={e => updateItemData(index, 'unit', e.target.value)} 
-                                  className="w-16 p-1 border rounded"
-                                />
+                                  className="w-16 p-1 border rounded text-sm"
+                                >
+                                  <option value="St">St</option>
+                                  <option value="m">m</option>
+                                  <option value="kg">kg</option>
+                                  <option value="g">g</option>
+                                  <option value="mm">mm</option>
+                                </select>
                               </td>
                               <td className="px-3 py-2">
                                 <div className="relative">
