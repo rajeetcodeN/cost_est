@@ -584,8 +584,7 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
 
     try {
       await sendToWebhook(file);
-      // After successful upload, process the file
-      processDocument(file);
+      // The webhook will handle the response and update the UI
     } catch (error) {
       console.error('Error processing file:', error);
       toast.error(`Error: ${(error as Error).message}`);
