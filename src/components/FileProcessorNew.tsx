@@ -584,7 +584,8 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
 
     try {
       await sendToWebhook(file);
-      // The webhook will handle the response and update the UI
+      // The file is processed in sendToWebhook, no need to call processDocument
+      // The status will be updated by sendToWebhook
     } catch (error) {
       console.error('Error processing file:', error);
       toast.error(`Error: ${(error as Error).message}`);
@@ -1390,12 +1391,11 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
                   onChange={(e) => handleFileSelect(e.target.files)}
                 />
               </label>
-              {uploadStatus && (
-                <p className="mt-2 text-sm text-center text-blue-600">{uploadStatus}</p>
-              )}
+              <p className="mt-2 text-sm text-center text-blue-600 h-5">
+                {uploadStatus}
+              </p>
             </div>
             {/* Text paste functionality has been removed */}
-            <p id="upload-status" className="text-center text-sm text-gray-600 h-5 mt-2">{uploadStatus}</p>
             <button 
               id="process-btn" 
               onClick={processDocument} 
