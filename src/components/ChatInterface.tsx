@@ -367,7 +367,13 @@ export default function ChatInterface({ onProductSelect, onReceiveMessage, onFor
           {/* Settings */}
           <Dialog>
             <DialogTrigger asChild>
-              <Button variant="ghost" size="sm" className="text-white hover:bg-white/10">
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                className="text-white hover:bg-white/10"
+                aria-label="Settings"
+              >
+                <span className="sr-only">Settings</span>
                 <Settings className="h-4 w-4" />
               </Button>
             </DialogTrigger>
@@ -484,12 +490,13 @@ export default function ChatInterface({ onProductSelect, onReceiveMessage, onFor
           </div>
         </ScrollArea>
       </div>
-
       {/* Input - Fixed at bottom */}
       <div className="border-t border-gray-200 bg-white p-6 flex-shrink-0">
         <form onSubmit={handleSubmit} className="w-full">
           <div className="flex gap-3 items-end">
             <Input
+              id="chat-message-input"
+              name="chatMessage"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               placeholder="Type your question..."
@@ -498,13 +505,19 @@ export default function ChatInterface({ onProductSelect, onReceiveMessage, onFor
                 fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
                 minHeight: '48px'
               }}
+              aria-label="Type your message"
+              aria-required="true"
+              role="textbox"
             />
             <Button 
               type="submit" 
               size="icon" 
               className="rounded-2xl bg-gradient-to-r from-primary to-primary-dark hover:opacity-90 shrink-0 h-12 w-12 shadow-lg transition-all duration-200 hover:scale-105"
               disabled={!inputValue.trim()}
+              aria-label="Send message"
+              role="button"
             >
+              <span className="sr-only">Send message</span>
               <Send className="h-5 w-5" />
             </Button>
           </div>

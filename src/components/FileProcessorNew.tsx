@@ -171,131 +171,460 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
   // Function to calculate weight from dimensions and material density
   const calculateWeight = (width: number, height: number, depth: number, material: string): number => {
     try {
+      // Validate dimensions
+      if (isNaN(width) || isNaN(height) || isNaN(depth) || width <= 0 || height <= 0 || depth <= 0) {
+        console.warn('Invalid dimensions:', { width, height, depth });
+        return 0;
+      }
+      
       // Convert dimensions from mm to cm for volume calculation (1cm³ = 1000mm³)
       const volumeCm3 = (width / 10) * (height / 10) * (depth / 10);
       const baseMaterial = getBaseMaterial(material);
       const density = MATERIAL_DENSITY[baseMaterial as keyof typeof MATERIAL_DENSITY] || 7.85; // Default to steel density (7.85 g/cm³)
-      const weight = volumeCm3 * density;
-      return parseFloat(weight.toFixed(3)); // Return weight in grams with 3 decimal places
+      
+      // Calculate weight in grams (multiply by 1000 to convert from kg to g) and ensure it's a positive number
+      const weight = Math.max(0, volumeCm3 * density * 1000);
+      const roundedWeight = parseFloat(weight.toFixed(3));
+      
+      if (roundedWeight === 0) {
+        console.warn('Calculated weight is 0. Check dimensions and material density.', {
+          width, height, depth, material, baseMaterial, density, volumeCm3
+        });
+      }
+      
+      return roundedWeight;
     } catch (error) {
-      console.error('Error calculating weight:', error);
+      console.error('Error calculating weight:', error, {
+        width, height, depth, material,
+        errorMessage: error instanceof Error ? error.message : 'Unknown error'
+      });
       return 0;
     }
   };
 
   // Helper function to parse tab or space delimited text
   const parseTextTable = (text: string) => {
-    const lines = text.split('\n').filter(line => line.trim() !== '');
+    // First, normalize the text by replacing multiple spaces with a single space
+    const normalizedText = text.replace(/\s+/g, ' ').trim();
+    const lines = normalizedText.split('\n').filter(line => line.trim() !== '');
+    
     if (lines.length === 0) return [];
     
     // Try to determine if it's tab or space delimited
     const isTabDelimited = lines[0].includes('\t');
-    const delimiter = isTabDelimited ? '\t' : /\s{2,}/; // Tab or multiple spaces
     
-    // Try to find header row
+    // For single line input like "00111488    DIN 6885 C45K B 6x4x10                 400 St  23/25"
+    if (lines.length === 1) {
+      const line = lines[0].trim();
+      
+      // Skip if it's a header row
+      if (line.toLowerCase().includes('artikel') || 
+          line.toLowerCase().includes('menge') || 
+          line.toLowerCase().includes('gewicht')) {
+        return [];
+      }
+      
+      // Match pattern like "00111488    DIN 6885 C45K B 6x4x10                 400 St  23/25"
+      const singleLineMatch = line.match(/^(\S+)\s+(.+?)\s+(\d+)\s*(St|st|PCS|pcs|PCE|pce|PZ|pz|STK|stk|ST|st|PCS|pcs|PCE|pce|PZ|pz|STK|stk|ST|st)?\s*(?:\S+\s*)?(\d+[.,]?\d*)?/);
+      
+      if (singleLineMatch) {
+        const [_, articleNumber, articleName, quantity, unit, weight] = singleLineMatch;
+        const item: any = {
+          article_number: articleNumber,
+          article_name: articleName.trim(),
+          qty: parseFloat(quantity),
+          unit: (unit || 'St').replace(/[^a-zA-Z]/g, '') || 'St',
+        };
+        
+        // Try to extract dimensions from article name
+        const dimMatch = articleName.match(/(\d+)[xX×](\d+)[xX×](\d+)/);
+        if (dimMatch) {
+          item.dimensions = `${dimMatch[1]}x${dimMatch[2]}x${dimMatch[3]}`;
+          item.width = parseFloat(dimMatch[1]);
+          item.height = parseFloat(dimMatch[2]);
+          item.depth = parseFloat(dimMatch[3]);
+        }
+        
+        // Add weight if found
+        if (weight) {
+          item.weight = parseFloat(weight.replace(',', '.'));
+        }
+        
+        return [item];
+      }
+    }
+    
+    // Process as tabular data if multiple lines
     const headerRow = lines[0];
-    const headers = isTabDelimited 
-      ? headerRow.split('\t').map(h => h.trim().toLowerCase())
-      : headerRow.split(/\s{2,}/).map(h => h.trim().toLowerCase());
+    const isHeaderRow = headerRow.toLowerCase().includes('artikel') || 
+                       headerRow.toLowerCase().includes('menge') || 
+                       headerRow.toLowerCase().includes('gewicht');
     
-    // If we have a proper header row, process as table
-    if (headers.length > 3 && headers.some(h => ['artikel', 'menge', 'gewicht'].some(k => h.includes(k)))) {
-      return lines.slice(1).map(line => {
-        const values = isTabDelimited 
-          ? line.split('\t').map(v => v.trim())
-          : line.split(/\s{2,}/).map(v => v.trim());
+    const dataRows = isHeaderRow ? lines.slice(1) : lines;
+    
+    return dataRows.map(line => {
+      const values = isTabDelimited 
+        ? line.split('\t').map(v => v.trim())
+        : line.split(/\s{2,}/).map(v => v.trim());
+      
+      // For single-line data without headers, make an educated guess
+      if (!isHeaderRow && values.length >= 3) {
+        const item: any = {
+          article_number: values[0] || '',
+          article_name: values[1] || '',
+          qty: parseFloat(values[2]) || 1,
+          unit: 'St',
+        };
+        
+        // Try to extract dimensions from article name
+        const dimMatch = item.article_name.match(/(\d+)[xX×](\d+)[xX×](\d+)/);
+        if (dimMatch) {
+          item.dimensions = `${dimMatch[1]}x${dimMatch[2]}x${dimMatch[3]}`;
+          item.width = parseFloat(dimMatch[1]);
+          item.height = parseFloat(dimMatch[2]);
+          item.depth = parseFloat(dimMatch[3]);
+        }
+        
+        return item;
+      }
+      
+      // Process with headers if available
+      if (isHeaderRow) {
+        const headers = isTabDelimited 
+          ? headerRow.split('\t').map(h => h.trim().toLowerCase())
+          : headerRow.split(/\s{2,}/).map(h => h.trim().toLowerCase());
         
         const item: any = {};
         headers.forEach((header, index) => {
           if (values[index]) item[header] = values[index];
         });
         return item;
-      });
-    }
-    
-    // If no proper header row, try to parse as single line
-    if (lines.length === 1) {
-      const parts = text.trim().split(/\s+/);
-      if (parts.length >= 5) {
-        // Try to find position of quantity and unit
-        const qtyIndex = parts.findIndex((p, i) => !isNaN(parseFloat(p)) && i > 0);
-        if (qtyIndex > 0) {
-          const item: any = {};
-          item.article_name = parts.slice(1, qtyIndex).join(' ');
-          item.qty = parseFloat(parts[qtyIndex]);
-          item.unit = parts[qtyIndex + 1] || 'St';
-          
-          // Try to find weight
-          const weightIndex = parts.findIndex((p, i) => i > qtyIndex + 1 && !isNaN(parseFloat(p.replace(',', '.'))));
-          if (weightIndex > 0) {
-            item.weight = parseFloat(parts[weightIndex].replace(',', '.'));
-          }
-          
-          // Try to extract dimensions from article name
-          const dimMatch = item.article_name.match(/(\d+)[xX×](\d+)[xX×](\d+)/);
-          if (dimMatch) {
-            item.dimensions = `${dimMatch[1]}x${dimMatch[2]}x${dimMatch[3]}`;
-          }
-          
-          return [item];
-        }
       }
-    }
+      
+      return null;
+    }).filter(Boolean); // Remove any null entries
     
     return [];
   };
 
+  // Track the last processed text to prevent duplicate processing
+  const lastProcessedText = useRef<string>('');
+  const processingRef = useRef<boolean>(false);
+
+  // Function to normalize text for comparison
+  const normalizeText = (text: string): string => {
+    return text
+      .trim()
+      .replace(/\s+/g, ' ') // Replace multiple spaces with single space
+      .replace(/[\r\n]+/g, ' ') // Replace newlines with space
+      .replace(/[^\w\s]/g, '') // Remove special characters
+      .toLowerCase();
+  };
+
+  // Function to extract value by field name from structured text
+  const extractFieldValue = (text: string, fieldName: string): string => {
+    const regex = new RegExp(`${fieldName}[\s:]+([^\n]+)`, 'i');
+    const match = text.match(regex);
+    return match ? match[1].trim() : '';
+  };
+
   // Function to process pasted text and extract items with weights
   const processPastedText = (text: string) => {
+    if (processingRef.current) {
+      console.log('Already processing text, skipping duplicate');
+      return;
+    }
+    
+    processingRef.current = true;
+    
     try {
-      if (!text || typeof text !== 'string') {
-        throw new Error('No text provided or invalid format');
+      if (!text || typeof text !== 'string' || text.trim() === '') {
+        // If text is empty or invalid, clear the items and return
+        setItems([]);
+        setIsDataExtracted(false);
+        setUploadStatus('No valid text provided');
+        return;
       }
 
-      // First try to parse as JSON
-      try {
-        const jsonItems = JSON.parse(text);
-        return processJsonItems(Array.isArray(jsonItems) ? jsonItems : [jsonItems]);
-      } catch (e) {
-        // If not JSON, try to parse as text table
-        const tableItems = parseTextTable(text);
-        if (tableItems.length > 0) {
-          return processTextItems(tableItems);
-        }
+      // Clear any existing items first
+      setItems([]);
+      
+      // Normalize the text for comparison
+      const normalizedForComparison = normalizeText(text);
+      
+      // Check if this is a duplicate of the last processed text
+      if (normalizedForComparison === normalizeText(lastProcessedText.current)) {
+        console.log('Skipping duplicate text');
+        return;
+      }
+      
+      // Update the last processed text with the original text
+      lastProcessedText.current = text;
+      
+      // Process the text with original formatting
+      const normalizedText = text.trim();
+      const lines = normalizedText.split('\n').filter(line => line.trim() !== '');
+      
+      // Log the received text for debugging
+      console.log('Processing text:', text);
+      
+      // Check for different text formats with more flexible matching
+      const hasArtikelMaterialnummer = /Artikel[\s:]+Materialnummer|Artikelnr/i.test(text);
+      const hasMengePreis = /Menge[\s&:]+Preis|Menge:/i.test(text);
+      const isStructuredFormat = hasArtikelMaterialnummer && hasMengePreis;
+      
+      // More flexible detection for compact format
+      const isCompactFormat = /\d+[\s\d,.]*[A-Za-z]*\s*\n\s*(Ihre )?Artikelnr[\s:]/i.test(text) && 
+                            /\d+[xX×]\d+[xX×]\d+|\d+\s*[xX×]\s*\d+\s*[xX×]\s*\d+/i.test(text);
+      
+      console.log('Format detection:', { isStructuredFormat, isCompactFormat, hasArtikelMaterialnummer, hasMengePreis });
+      
+      // Process as compact format (e.g., with "Ihre Artikelnr:")
+      if (isCompactFormat) {
+        console.log('Processing as compact format');
+        const lines = text.split('\n').map(line => line.trim()).filter(line => line);
         
-        // If still no items, try to parse as single line
-        const parts = text.trim().split(/\s+/);
-        if (parts.length >= 5) {
-          const item: any = {};
-          // Try to find position of quantity (first numeric value after position)
-          const qtyIndex = parts.findIndex((p, i) => i > 0 && !isNaN(parseFloat(p)));
-          if (qtyIndex > 0) {
-            item.article_name = parts.slice(1, qtyIndex).join(' ');
-            item.qty = parseFloat(parts[qtyIndex]);
-            item.unit = parts[qtyIndex + 1] || 'St';
-            
-            // Try to find weight (next numeric value after unit)
-            const weightIndex = parts.findIndex((p, i) => i > qtyIndex + 1 && !isNaN(parseFloat(p.replace(',', '.'))));
-            if (weightIndex > 0) {
-              item.weight = parseFloat(parts[weightIndex].replace(',', '.'));
-            }
-            
-            // Extract dimensions from article name (e.g., 6x4x10)
-            const dimMatch = item.article_name.match(/(\d+)[xX×](\d+)[xX×](\d+)/);
-            if (dimMatch) {
-              item.dimensions = `${dimMatch[1]}x${dimMatch[2]}x${dimMatch[3]}`;
-              
-              // Extract material (e.g., C45K)
-              const materialMatch = item.article_name.match(/\b([A-Z]\d+[A-Z]?)\b/);
-              if (materialMatch) {
-                item.material = materialMatch[1];
-              }
-            }
-            
-            return processTextItems([item]);
+        // First line: article number and quantity (e.g., "61801100 500,00STK")
+        const firstLine = lines[0];
+        console.log('First line:', firstLine);
+        
+        // More robust quantity and unit extraction
+        let quantity = 1;
+        let unit = 'St';
+        
+        // Try to find quantity and unit in the first line
+        const qtyMatch = firstLine.match(/(\d+[\d,.]*)\s*([A-Za-z]*)/);
+        if (qtyMatch) {
+          console.log('Quantity match:', qtyMatch);
+          quantity = parseFloat(qtyMatch[1].replace(/\./g, '').replace(',', '.'));
+          unit = qtyMatch[2] || 'St';
+        } else {
+          // If no quantity found in first line, try to find it in the description
+          const qtyInDesc = text.match(/Menge[:\s]+(\d+)/i);
+          if (qtyInDesc) {
+            quantity = parseInt(qtyInDesc[1], 10);
           }
         }
         
+        // Extract material (e.g., C45) - check in description first, then fall back to article name
+        let material = 'C45'; // Default material
+        const materialMatch = text.match(/Material[:\s]+([A-Z]\d+[A-Z]?)/i) || 
+                            text.match(/\b([A-Z]\d+[A-Z]?)\b/);
+        if (materialMatch) {
+          material = materialMatch[1];
+        }
+        
+        console.log('Extracted quantity:', quantity, 'unit:', unit);
+        
+        // Second line: article number (e.g., "Ihre Artikelnr: A 2X2X22")
+        const articleLine = lines[1] || '';
+        const articleNumber = articleLine.replace(/^Ihre Artikelnr:\s*/i, '').trim();
+        
+        // Third line: description (e.g., "Passfeder DIN 6885-1 Form A 2 x 2 x 22 mm Material C45")
+        const description = lines[2] || '';
+        
+        // Extract dimensions (e.g., 2 x 2 x 22 or 2x2x22 or 2X2X22 or 2-2-22)
+        const dimMatch = description.match(/(\d+)\s*[xX×-]\s*(\d+)\s*[xX×-]\s*(\d+)/) || 
+                        description.match(/(\d+)\s*[^xX×\d]\s*(\d+)\s*[^xX×\d]\s*(\d+)/);
+        
+        // Calculate weight if dimensions are available
+        let weight = 0;
+        if (dimMatch) {
+          const width = parseFloat(dimMatch[1]);
+          const height = parseFloat(dimMatch[2]);
+          const depth = parseFloat(dimMatch[3]);
+          weight = calculateWeight(width, height, depth, material);
+          console.log(`Calculated weight: ${weight}kg for dimensions ${width}x${height}x${depth}mm (${material})`);
+        }
+        
+        const item: ExtractedItem = {
+          id: 1,
+          pos: 1,
+          article_name: description || 'Unbenannt',
+          supplier_material_number: firstLine.split(' ')[0] || '',
+          customer_material_number: articleNumber,
+          qty: quantity,
+          unit: unit,
+          deliveryDate: '',
+          productGroup: '',
+          material: materialMatch ? materialMatch[1] : 'C45',
+          width: dimMatch ? parseFloat(dimMatch[1]) : 0,
+          height: dimMatch ? parseFloat(dimMatch[2]) : 0,
+          depth: dimMatch ? parseFloat(dimMatch[3]) : 0,
+          dimensions: {
+            width: dimMatch ? parseFloat(dimMatch[1]) : 0,
+            height: dimMatch ? parseFloat(dimMatch[2]) : 0,
+            depth: dimMatch ? parseFloat(dimMatch[3]) : 0
+          },
+          weight: weight,
+          bore: 'No Bore',
+          numberOfBores: 0,
+          coating: 'No Coating',
+          hardening: 'No Hardening',
+          toleranceBreite: 'No Tolerance',
+          toleranceHohe: 'No Tolerance',
+          unitPrice: 0,
+          lineTotal: 0,
+          price: 0,
+          dinNorm: description.match(/DIN\s+[\d-]+/)?.[0] || ''
+        };
+        
+        setItems([item]);
+        setIsDataExtracted(true);
+        setUploadStatus(`Processed 1 item`);
+        processingRef.current = false;
+        return;
+      }
+      // Process as structured format if detected
+      else if (isStructuredFormat) {
+        const articleNumber = extractFieldValue(text, 'Artikel');
+        const materialNumber = extractFieldValue(text, 'Materialnummer');
+        const shortText = extractFieldValue(text, 'Kurztext');
+        const quantityText = extractFieldValue(text, 'Menge');
+        const quantity = parseInt(quantityText.replace(/\D/g, ''), 10) || 1;
+        const deliveryDate = extractFieldValue(text, 'Wunschlieferdatum');
+        
+        // Extract dimensions from short text (e.g., "PASSFED-D6885B-C45C-20X12X30")
+        const dimMatch = shortText.match(/(\d+)[xX×](\d+)[xX×](\d+)/i) || 
+                        shortText.match(/(\d+)[^xX×](\d+)[^xX×](\d+)/);
+        
+        const item: ExtractedItem = {
+          id: 1,
+          pos: 1,
+          article_name: shortText || 'Unbenannt',
+          supplier_material_number: articleNumber || materialNumber || '',
+          customer_material_number: materialNumber || articleNumber || '',
+          qty: quantity,
+          unit: 'St',
+          deliveryDate: deliveryDate || '',
+          productGroup: '',
+          material: 'C45', // Default material
+          width: dimMatch ? parseFloat(dimMatch[1]) : 0,
+          height: dimMatch ? parseFloat(dimMatch[2]) : 0,
+          depth: dimMatch ? parseFloat(dimMatch[3]) : 0,
+          dimensions: {
+            width: dimMatch ? parseFloat(dimMatch[1]) : 0,
+            height: dimMatch ? parseFloat(dimMatch[2]) : 0,
+            depth: dimMatch ? parseFloat(dimMatch[3]) : 0
+          },
+          weight: weight,
+          bore: 'No Bore',
+          numberOfBores: 0,
+          coating: 'No Coating',
+          hardening: 'No Hardening',
+          toleranceBreite: 'No Tolerance',
+          toleranceHohe: 'No Tolerance',
+          unitPrice: 0,
+          lineTotal: 0,
+          price: 0
+        };
+        
+        // Try to extract material from article name if available
+        if (shortText) {
+          const materialMatch = shortText.match(/[A-Z]\d+[A-Z]?/);
+          if (materialMatch) {
+            item.material = materialMatch[0];
+          }
+        }
+        
+        setItems([item]);
+        setIsDataExtracted(true);
+        setUploadStatus(`Processed 1 item`);
+        processingRef.current = false;
+        return;
+      }
+      
+      // Process as line-based format (original logic)
+      const newItems: ExtractedItem[] = [];
+      
+      lines.forEach((line, index) => {
+        const parts = line.trim().split(/\s+/);
+        
+        // Skip empty lines or lines that don't have enough parts
+        if (parts.length < 3) return;
+        
+        // Try to find quantity (first number after article name)
+        const qtyIndex = parts.findIndex((p, i) => i > 0 && /^\d+$/.test(p));
+        
+        if (qtyIndex > 0) {
+          const item: ExtractedItem = {
+            id: index + 1,
+            pos: index + 1,
+            article_name: parts.slice(1, qtyIndex).join(' '),
+            supplier_material_number: parts[0],
+            customer_material_number: '',
+            qty: parseInt(parts[qtyIndex], 10) || 1,
+            unit: parts[qtyIndex + 1] || 'St',
+            deliveryDate: '',
+            productGroup: '',
+            material: 'C45',
+            width: 0,
+            height: 0,
+            depth: 0,
+            dimensions: { width: 0, height: 0, depth: 0 },
+            weight: weight,
+            bore: 'No Bore',
+            numberOfBores: 0,
+            coating: 'No Coating',
+            hardening: 'No Hardening',
+            toleranceBreite: 'No Tolerance',
+            toleranceHohe: 'No Tolerance',
+            unitPrice: 0,
+            lineTotal: 0,
+            price: 0
+          };
+          
+          // Try to extract dimensions from article name (e.g., 6x4x10)
+          const dimMatch = item.article_name.match(/(\d+)[xX×](\d+)[xX×](\d+)/);
+          if (dimMatch) {
+            item.width = parseFloat(dimMatch[1]);
+            item.height = parseFloat(dimMatch[2]);
+            item.depth = parseFloat(dimMatch[3]);
+            item.dimensions = {
+              width: item.width,
+              height: item.height,
+              depth: item.depth
+            };
+            
+            // Calculate weight based on dimensions and material
+            item.weight = calculateWeight(item.width, item.height, item.depth, item.material);
+          }
+          
+          // Extract material (e.g., C45K)
+          const materialMatch = item.article_name.match(/\b([A-Z]\d+[A-Z]?)\b/);
+          if (materialMatch) {
+            item.material = materialMatch[1];
+          }
+          
+          // Update pricing with the calculated weight and material
+          const updatedItem = updateItemPricing({
+            ...item,
+            weight: calculateWeight(item.width, item.height, item.depth, item.material)
+          });
+          
+          // Update the item with the calculated prices
+          item.unitPrice = updatedItem.unitPrice;
+          item.lineTotal = updatedItem.lineTotal;
+          item.price = updatedItem.unitPrice;
+          item.weight = updatedItem.weight;
+          
+          console.log('Item pricing updated:', {
+            material: item.material,
+            weight: item.weight,
+            unitPrice: item.unitPrice,
+            lineTotal: item.lineTotal,
+            qty: item.qty
+          });
+          
+          newItems.push(item);
+        }
+      });
+      
+      if (newItems.length > 0) {
+        setItems(newItems);
+        setIsDataExtracted(true);
+        setUploadStatus(`Processed ${newItems.length} item${newItems.length !== 1 ? 's' : ''}`);
+      } else {
         throw new Error('Could not parse the input format');
       }
       try {
@@ -438,20 +767,81 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
       toast.error('Error processing pasted text. Please check the format.');
     }
   };
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [totalCost, setTotalCost] = useState<number>(0);
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const processedTextRef = useRef<string>('');
+
+  // Track if we're currently handling a paste event
+  const isPastingRef = useRef(false);
+
+  // Handle text area change event
+  const handleTextAreaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const text = e.target.value;
+    setLastPastedText(text);
+    
+    // Only process if we're not currently handling a paste event
+    // and if the text has actually changed (not just cursor movement)
+    if (!isPastingRef.current && text !== processedTextRef.current) {
+      processPastedText(text);
+      processedTextRef.current = text;
+    }
+  };
 
   // Handle text area paste event
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const pastedText = e.clipboardData.getData('text/plain');
+    // Prevent the default paste behavior
+    e.preventDefault();
+    
+    // Get the pasted text
+    const pastedText = e.clipboardData.getData('text/plain').trim();
+    
+    // Skip if this is the same as the last processed text
+    if (pastedText === processedTextRef.current) {
+      console.log('Skipping duplicate paste');
+      return;
+    }
+    
+    // Update the textarea value directly
+    const textarea = e.currentTarget;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const newValue = textarea.value.substring(0, start) + pastedText + textarea.value.substring(end);
+    
+    // Update the state and process the text
     setLastPastedText(pastedText);
+    isPastingRef.current = true;
     processPastedText(pastedText);
+    
+    // Update the textarea value directly to avoid duplicate processing
+    // We'll use a small timeout to ensure React has processed the state update
+    setTimeout(() => {
+      textarea.value = newValue;
+      // Set cursor position after the pasted text
+      const newCursorPos = start + pastedText.length;
+      textarea.setSelectionRange(newCursorPos, newCursorPos);
+      isPastingRef.current = false;
+      processedTextRef.current = pastedText;
+    }, 0);
   };
 
   // Handle process button click
   const handleProcessText = () => {
-    if (lastPastedText) {
+    if (!lastPastedText || isProcessing) return;
+    
+    // Skip if we've already processed this exact text
+    if (lastPastedText === processedTextRef.current) {
+      console.log('Skipping already processed text');
+      return;
+    }
+    
+    setIsProcessing(true);
+    try {
       processPastedText(lastPastedText);
+      processedTextRef.current = lastPastedText;
+    } catch (error) {
+      console.error('Error processing text:', error);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -541,21 +931,61 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
     }
   };
 
+  // List of allowed file types with their extensions and MIME types
+  const ALLOWED_FILE_TYPES = {
+    // Images
+    'image/jpeg': '.jpeg,.jpg',
+    'image/png': '.png',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    // PDF
+    'application/pdf': '.pdf',
+    // Word Documents
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+    'application/msword': '.doc',
+    // Excel Spreadsheets
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+    'application/vnd.ms-excel': '.xls',
+  };
+
+  // Maximum file size (10MB)
+  const MAX_FILE_SIZE_MB = 10;
+  const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+
   const handleFileSelect = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
     const file = files[0];
-    const validTypes = [
-      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
-      'application/pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/msword',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'application/vnd.ms-excel'
-    ];
+    
+    // Check file size
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      showError(`File size exceeds ${MAX_FILE_SIZE_MB}MB limit. Please choose a smaller file.`);
+      return;
+    }
 
-    if (!validTypes.includes(file.type)) {
-      showError('Unsupported file type. Please upload an image, PDF, Word, or Excel file.');
+    // Get file extension
+    const fileExtension = file.name.split('.').pop()?.toLowerCase() || '';
+    
+    // Check MIME type against allowed types
+    const isValidMimeType = Object.keys(ALLOWED_FILE_TYPES).includes(file.type);
+    
+    // Check file extension against allowed extensions
+    const isValidExtension = Object.values(ALLOWED_FILE_TYPES)
+      .some(extensions => extensions.split(',').includes(`.${fileExtension}`));
+    
+    // Additional security: Check if the file type matches its extension
+    const isTypeConsistent = () => {
+      if (!isValidMimeType) return false;
+      const expectedExtensions = ALLOWED_FILE_TYPES[file.type as keyof typeof ALLOWED_FILE_TYPES].split(',');
+      return expectedExtensions.some(ext => file.name.toLowerCase().endsWith(ext));
+    };
+
+    if (!isValidMimeType || !isValidExtension || !isTypeConsistent()) {
+      showError(
+        'Invalid file type. ' + 
+        'Please upload only image (JPEG, PNG, GIF, WebP), ' +
+        'PDF, Word (DOC, DOCX), or Excel (XLS, XLSX) files.'
+      );
       return;
     }
 
@@ -614,26 +1044,65 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
     setUploadStatus('');
   };
   
-  const processDocument = async (file: File) => {
+  const processDocument = async (input: File | string | null | undefined) => {
     try {
-      // If we have a file, it's already been sent to the webhook
-      // Now we'll just update the UI with the response
-      // In a real implementation, you would process the webhook response here
+      if (!input) {
+        throw new Error('No input provided for processing');
+      }
+
+      setUploadStatus('Processing...');
+      setIsProcessing(true);
       
-      // For now, we'll use mock data as a fallback
-      // In a production environment, you would use the actual response from the webhook
+      // Handle string input (pasted text)
+      if (typeof input === 'string') {
+        processPastedText(input);
+        return;
+      }
+      
+      // Handle File input
+      if (input instanceof File) {
+        const fileName = input.name || '';
+        const fileType = input.type || '';
+        
+        try {
+          // If it's a text file, process it directly
+          if (fileType === 'text/plain' || fileName.toLowerCase().endsWith('.txt')) {
+            const text = await input.text();
+            processPastedText(text);
+          } 
+          // If it's a JSON file, parse it
+          else if (fileType === 'application/json' || fileName.toLowerCase().endsWith('.json')) {
+            const jsonText = await input.text();
+            const jsonData = JSON.parse(jsonText);
+            if (jsonData.requested_items?.length > 0) {
+              processJsonItems(jsonData.requested_items);
+            } else {
+              throw new Error('No valid items found in the JSON file');
+            }
+          } 
+          // For other file types, try to extract text
+          else {
+            const text = await input.text();
+            processPastedText(text);
+          }
+        } catch (processError) {
+          console.error('Error processing file:', processError);
+          throw new Error(`Failed to process file: ${(processError as Error).message}`);
+        }
+      }
+      
       setUploadStatus('Processing complete!');
-      populateDataViewWithMock();
-      setIsDataExtracted(true);
     } catch (error) {
       console.error('Error processing document:', error);
-      toast.error('Failed to process document');
+      setUploadStatus(`Error: ${(error as Error).message || 'Failed to process document'}`);
+      toast.error(`Error: ${(error as Error).message || 'Failed to process document'}`);
+      setIsProcessing(false);
     }
   };
 
   const sendToWebhook = async (file: File) => {
     const N8N_WEBHOOK_URL = 'https://nosta.app.n8n.cloud/webhook/f8957a80-b4c3-4bb4-b3c0-256624cbcc40';
-    setUploadStatus('Sending to n8n workflow. This may take a few minutes...');
+    setUploadStatus('Extracting data from uploaded file. This may take a few minutes...');
     setIsProcessing(true);
 
     // Check if the file exists and has content
@@ -1018,19 +1487,17 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
             { 
               content: 'Supplier\nMaterial', 
               styles: { 
-                cellWidth: 'auto', 
+                cellWidth: 'auto' as const,
                 minCellWidth: 30,
-                fontSize: 6,
-                lineHeight: 1.2
+                fontSize: 6
               } 
             },
             { 
               content: 'Customer\nMaterial', 
               styles: { 
-                cellWidth: 'auto',
+                cellWidth: 'auto' as const,
                 minCellWidth: 30,
-                fontSize: 6,
-                lineHeight: 1.2
+                fontSize: 6
               } 
             },
             { 
@@ -1053,20 +1520,18 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
             { 
               content: 'Dimensions\n(W×H×D mm)', 
               styles: { 
-                cellWidth: 'auto',
+                cellWidth: 'auto' as const,
                 minCellWidth: 25,
-                fontSize: 5.5,
-                lineHeight: 1.2
+                fontSize: 5.5
               } 
             },
             { 
               content: 'Weight\n(kg)', 
               styles: { 
-                cellWidth: 'auto',
+                cellWidth: 'auto' as const,
                 minCellWidth: 15,
                 fontSize: 6,
-                lineHeight: 1.2,
-                halign: 'right'
+                halign: 'right' as const
               } 
             },
             { 
@@ -1142,10 +1607,10 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
           overflow: 'linebreak',
           cellPadding: { top: 3, right: 2, bottom: 3, left: 2 }, // More vertical padding
           fontSize: 7,
-          cellWidth: 'wrap',
+          cellWidth: 'wrap' as const,
           minCellHeight: 10, // Increased minimum height
-          lineHeight: 1.4, // Better line spacing
-          valign: 'middle' // Center content vertically
+          valign: 'middle' as const, // Center content vertically
+          cellPadding: 3 // Add some padding instead of lineHeight
         },
         columnStyles: {
           0: { cellWidth: 10, halign: 'center' },  // #
@@ -1271,10 +1736,24 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
   };
   
   const calculateItemCosts = (item: ExtractedItem) => {
-    // Calculate material cost based on volume and material type
-    const volume = (item.width * item.height * item.depth) / 1000; // Convert to cm³
-    const materialDensity = MATERIAL_DENSITY[item.material as keyof typeof MATERIAL_DENSITY] || 7.85; // g/cm³
-    const weight = volume * materialDensity; // grams
+    // Check which dimensions are present and valid (greater than 0)
+    const hasWidth = item.width > 0;
+    const hasHeight = item.height > 0;
+    const hasDepth = item.depth > 0;
+    
+    // Calculate volume using only present dimensions, default to 1 for missing dimensions
+    const effectiveWidth = hasWidth ? item.width : 1;
+    const effectiveHeight = hasHeight ? item.height : 1;
+    const effectiveDepth = hasDepth ? item.depth : 1;
+    
+    // Calculate volume in cm³ (convert from mm³ to cm³ by dividing by 1000)
+    const volume = (effectiveWidth * effectiveHeight * effectiveDepth) / 1000;
+    
+    // Get material density with fallback to steel (7.85 g/cm³)
+    const materialDensity = MATERIAL_DENSITY[item.material as keyof typeof MATERIAL_DENSITY] || 7.85;
+    
+    // Calculate weight in grams
+    const weight = volume * materialDensity;
     
     // Base material cost
     let materialCost = (COST_DATA.MATERIAL_COSTS_PER_GRAM[item.material as keyof typeof COST_DATA.MATERIAL_COSTS_PER_GRAM] || 0) * weight;
@@ -1379,7 +1858,8 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
                   id="document-upload" 
                   type="file" 
                   className="hidden" 
-                  accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" 
+                  accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.doc,.docx,.xls,.xlsx" 
+                  // Restrict to specific file types to prevent executable uploads
                   onChange={(e) => handleFileSelect(e.target.files)}
                 />
               </label>
@@ -1943,25 +2423,25 @@ const FileProcessor: React.FC<FileProcessorProps> = ({ onSendToChat = () => {} }
                                 <div className="flex gap-1">
                                   <input 
                                     type="number" 
-                                    value={item.width || ''} 
+                                    value={item.width > 0 ? item.width : ''} 
                                     onChange={e => updateItemData(index, 'width', e.target.value)} 
-                                    placeholder="W"
+                                    placeholder={item.width > 0 ? '' : 'NA'}
                                     className="w-14 p-1 border rounded text-center"
                                   />
                                   <span className="self-center">×</span>
                                   <input 
                                     type="number" 
-                                    value={item.height || ''} 
+                                    value={item.height > 0 ? item.height : ''} 
                                     onChange={e => updateItemData(index, 'height', e.target.value)} 
-                                    placeholder="H"
+                                    placeholder={item.height > 0 ? '' : 'NA'}
                                     className="w-14 p-1 border rounded text-center"
                                   />
                                   <span className="self-center">×</span>
                                   <input 
                                     type="number" 
-                                    value={item.depth || ''} 
+                                    value={item.depth > 0 ? item.depth : ''} 
                                     onChange={e => updateItemData(index, 'depth', e.target.value)} 
-                                    placeholder="D"
+                                    placeholder={item.depth > 0 ? '' : 'NA'}
                                     className="w-14 p-1 border rounded text-center"
                                   />
                                 </div>

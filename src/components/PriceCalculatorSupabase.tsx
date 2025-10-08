@@ -85,6 +85,41 @@ export default function PriceCalculatorSupabase({
   const [customerDetails, setCustomerDetails] = useState('');
   const [activeTab, setActiveTab] = useState<'form' | 'file'>('file');
   
+  // Material density in g/cm³
+  const materialDensity: {[key: string]: number} = {
+    'C45': 7.85,
+    'C60': 7.84,
+    'Edelstahl': 7.95,
+    'Aluminium': 2.70,
+    'Messing': 8.50,
+    // Add more materials as needed
+  };
+
+  // Calculate weight based on dimensions and material
+  const calculateWeight = (breite: string, hohe: string, tiefe: string, material: string): number => {
+    // Convert dimensions to numbers, default to 0 if empty or invalid
+    const w = parseFloat(breite) || 0;
+    const h = parseFloat(hohe) || 0;
+    const d = parseFloat(tiefe) || 0;
+    
+    // Skip calculation if any required dimension is missing
+    if (w === 0 || h === 0 || d === 0 || !material) {
+      return 0;
+    }
+    
+    // Calculate volume in cm³ (convert each dimension from mm to cm first)
+    const volume = (w * h * d) / 1000; // (w/10) * (h/10) * (d/10) = (w*h*d)/1000
+    console.log(`Calculating weight for ${w}x${h}x${d}mm (${volume} cm³) of ${material} (${materialDensity[material]} g/cm³)`);
+    // Get density from material, default to 0 if material not found
+    const density = materialDensity[material] || 0;
+    
+    // Calculate weight in grams (volume in cm³ * density in g/cm³)
+    const weight = volume * density;
+    
+    // Return weight with 3 decimal places for precision
+    return weight > 0 ? parseFloat(weight.toFixed(3)) : 0;
+  };
+
   // Form State
   const [formData, setFormData] = useState<FormData>({
     productGroupId: '',
@@ -94,7 +129,7 @@ export default function PriceCalculatorSupabase({
     breite: '',
     hohe: '',
     tiefe: '',
-    weight: 10,
+    weight: 0, // Will be calculated
     bore: '',
     numberOfBores: 1,
     coating: '',
@@ -121,7 +156,6 @@ export default function PriceCalculatorSupabase({
   const [error, setError] = useState<string | null>(null);
 
   // Format the options received from the Edge Function
-
   const formatOptions = (data: Partial<FormattedOptions>): FormattedOptions => {
     return {
       Norms: data.Norms || [],
@@ -135,6 +169,19 @@ export default function PriceCalculatorSupabase({
       TolerancesHohe: data.TolerancesHohe || []
     };
   };
+
+  // Update weight when dimensions or material change
+  useEffect(() => {
+    if (formData.breite || formData.hohe || formData.tiefe || formData.material) {
+      const newWeight = calculateWeight(
+        formData.breite, 
+        formData.hohe, 
+        formData.tiefe, 
+        formData.material
+      );
+      setFormData(prev => ({ ...prev, weight: newWeight }));
+    }
+  }, [formData.breite, formData.hohe, formData.tiefe, formData.material]);
 
   // --- EDGE FUNCTION INTEGRATION ---
   // Fetch product groups on component mount
@@ -222,14 +269,24 @@ export default function PriceCalculatorSupabase({
         const formattedOptions = formatOptions(data);
         setAvailableOptions(formattedOptions);
         
+              // Get initial values
+        const newMaterial = formattedOptions.Materials?.[0] || '';
+        const newBreite = formattedOptions.Dimensions?.[0]?.toString() || '';
+        const newHohe = formattedOptions.Dimensions?.[0]?.toString() || '';
+        const newTiefe = formattedOptions.Dimensions?.[0]?.toString() || '';
+        
+        // Calculate weight based on dimensions and material
+        const newWeight = calculateWeight(newBreite, newHohe, newTiefe, newMaterial);
+
         // Update form data with first available options
         setFormData(prev => ({
           ...prev,
           dinNorm: formattedOptions.Norms?.[0] || '',
-          material: formattedOptions.Materials?.[0] || '',
-          breite: formattedOptions.Dimensions?.[0]?.toString() || '',
-          hohe: formattedOptions.Dimensions?.[0]?.toString() || '',
-          tiefe: formattedOptions.Dimensions?.[0]?.toString() || '',
+          material: newMaterial,
+          breite: newBreite,
+          hohe: newHohe,
+          tiefe: newTiefe,
+          weight: newWeight,
           bore: formattedOptions.Bores?.[0] || '',
           numberOfBores: formattedOptions.NumberOfBores?.[0] ? parseInt(formattedOptions.NumberOfBores[0]) : 1,
           coating: formattedOptions.Coatings?.[0] || '',
@@ -295,18 +352,27 @@ export default function PriceCalculatorSupabase({
         }
       });
       
-      console.log('Processed form data:', updatedData);
-      
-      setFormData(prev => ({
-        ...prev,
-        ...updatedData,
-        // Ensure required fields maintain their types
-        weight: updatedData.weight !== undefined ? Number(updatedData.weight) : prev.weight,
-        numberOfBores: updatedData.numberOfBores !== undefined ? Number(updatedData.numberOfBores) : prev.numberOfBores,
-        quantity: updatedData.quantity !== undefined ? Number(updatedData.quantity) : prev.quantity,
-      }));
-      
-      toast.success('Form filled from chat!');
+      const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+        const { name, value } = e.target;
+        
+        // Create updated form data
+        const updatedData = {
+          ...formData,
+          [name]: name === 'quantity' || name === 'numberOfBores' ? parseInt(value) || 0 : value
+        };
+        
+        // If any dimension or material changes, recalculate weight
+        if (['breite', 'hohe', 'tiefe', 'material'].includes(name)) {
+          updatedData.weight = calculateWeight(
+            name === 'breite' ? value : formData.breite,
+            name === 'hohe' ? value : formData.hohe,
+            name === 'tiefe' ? value : formData.tiefe,
+            name === 'material' ? value : formData.material
+          );
+        }
+        
+        setFormData(updatedData);
+      };
     };
     
     (window as any).fillFormFromChat = fillFormFromChat;
@@ -775,13 +841,16 @@ Please provide guidance for this step.`;
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium mb-2">Weight (grams)</label>
+                        <label className="block text-sm font-medium mb-2">Weight (g)</label>
                         <Input
                           type="number"
                           value={formData.weight}
-                          onChange={(e) => setFormData(prev => ({ ...prev, weight: Number(e.target.value) }))}
-                          min="1"
+                          readOnly
+                          className="bg-gray-100"
                         />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Calculated from dimensions and material
+                        </p>
                       </div>
                     </div>
                   )}
